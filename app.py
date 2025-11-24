@@ -11,7 +11,7 @@ import os
 
 # --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN EXCEL PUBLIC !) ---
 # Cette URL doit pointer vers un fichier .xls ou .xlsx contenant les feuilles "joueur" et "club".
-FFE_DATA_URL = "https://docs.google.com/spreadsheets/d/11z7ZwAVRKcTZsAdH_OF6_RO3nGhXNeGQ/export?format=xlsx" 
+FFE_DATA_URL = "http://basilevinet.com/data/BaseFFE.xls" 
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="♟️ MasterCoach", layout="wide", page_icon="♟️")
@@ -230,4 +230,5 @@ if not df.empty:
 # Message d'erreur si la base n'a pas pu être chargée du tout
 elif FFE_DATA_URL == "VOTRE_URL_EXPORT_EXCEL":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_EXPORT_EXCEL par l'URL de votre fichier FFE hébergé.")
+
 
