@@ -7,21 +7,25 @@ from collections import Counter
 from fpdf import FPDF
 import datetime
 import io
-import os # NOUVEAU: Pour la gestion du fichier
+import os
+
+# --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN EXCEL PUBLIC !) ---
+# Cette URL doit pointer vers un fichier .xls ou .xlsx contenant les feuilles "joueur" et "club".
+FFE_DATA_URL = "VOTRE_URL_EXPORT_EXCEL" 
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="MasterCoach Echecs", layout="wide", page_icon="♟️")
+st.set_page_config(page_title="♟️ MasterCoach", layout="wide", page_icon="♟️")
 
 # --- PERSISTENCE (Sauvegarde des Liaisons) ---
 MAPPINGS_FILE = "mappings.json"
 
+@st.cache_data
 def load_mappings():
     # Tente de charger les mappings existants
     try:
         with open(MAPPINGS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        # Retourne un dictionnaire vide si le fichier n'existe pas ou est corrompu
         return {}
 
 def save_mappings(mappings_dict):
@@ -31,9 +35,53 @@ def save_mappings(mappings_dict):
             json.dump(mappings_dict, f, indent=4)
     except Exception as e:
         st.error(f"Erreur lors de la sauvegarde des liaisons : {e}")
+        
+# --- FONCTION DE CHARGEMENT PERMANENT PAR URL (Lecture XLSX/XLS) ---
+@st.cache_data
+def load_permanent_ffe_data(url):
+    try:
+        # Tente de lire les deux feuilles du fichier Excel hébergé
+        all_sheets = pd.read_excel(url, sheet_name=None)
+        
+        # S'assurer que les feuilles existent après conversion
+        df_joueurs = all_sheets.get("joueur")
+        df_clubs = all_sheets.get("club")     
+        
+        if df_joueurs is None or df_clubs is None:
+             st.error("Erreur: Impossible de trouver les feuilles nommées 'joueur' et 'club' dans le fichier Excel.")
+             return pd.DataFrame()
+        
+        # 1. Préparation et jointure des données
+        
+        # Nettoyage et combinaison des noms de joueurs (Nom Prenom)
+        df_joueurs['Nom Joueur'] = df_joueurs['Nom'].str.upper() + ' ' + df_joueurs['Prenom'].str.title()
+        
+        # Renommage des colonnes des clubs pour la jointure
+        df_clubs = df_clubs.rename(columns={'Ref': 'ClubRef', 'Nom': 'Nom Club'})
+        
+        # Sélection des colonnes essentielles pour la jointure
+        df_clubs = df_clubs[['ClubRef', 'Nom Club']]
+        
+        # Jointure des joueurs et des noms de clubs
+        df_final = pd.merge(df_joueurs, df_clubs, on='ClubRef', how='left')
+        
+        # Conversion du ClubRef en entier
+        df_final['ClubRef'] = pd.to_numeric(df_final['ClubRef'], errors='coerce').astype('Int64')
+        
+        # Sélection des colonnes finales pour l'application
+        df_final = df_final[['Nom Joueur', 'Cat', 'Elo', 'ClubRef', 'Nom Club']].copy()
 
+        # Renommage pour correspondre au reste de l'application
+        df_final = df_final.rename(columns={'Nom Joueur': 'Nom'}) 
+        
+        st.sidebar.success(f"{len(df_final)} joueurs chargés et joints avec les clubs.")
+        return df_final
+        
+    except Exception as e:
+        st.error(f"Erreur de chargement de la base FFE. Vérifiez que l'URL est correcte et que le fichier est public. Détail: {e}")
+        return pd.DataFrame()
 
-# --- CLASS PDF ---
+# --- CLASS PDF / get_player_stats (Identique) ---
 class PDFReport(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 16)
@@ -105,39 +153,28 @@ def get_player_stats(username, nb_games=50):
         return df_w, df_b
     except: return None, None
 
+
 # --- MAIN APP ---
 if 'mappings' not in st.session_state:
-    # Charge les données persistantes au démarrage
     st.session_state['mappings'] = load_mappings() 
 
 st.title("♟️ MasterCoach - Manager")
 
-df = pd.DataFrame()
-uploaded_file = None
+# CHARGEMENT PERMANENT DE LA BASE FFE
+df = load_permanent_ffe_data(FFE_DATA_URL)
 
 with st.sidebar:
-    st.subheader("Chargement des Données FFE")
-    uploaded_file = st.file_uploader("Importer le fichier joueurs FFE (CSV ou TXT)", type=["csv", "txt"])
+    st.subheader("Configuration du Club")
     
-    club_id = st.number_input("ID Club à filtrer", value=999)
-    st.info("Utilisez l'ID pour filtrer votre club. Ex: 999")
-
-if uploaded_file is not None:
-    try:
-        # Lecture du fichier FFE (souvent séparé par des points-virgules et encodé en latin-1)
-        df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', on_bad_lines='skip')
-        st.sidebar.success(f"{len(df)} joueurs chargés. Colonnes: {', '.join(df.columns)}")
-        
-        # S'assurer que les colonnes nécessaires existent
-        required_cols = ['Nom', 'Cat', 'Elo', 'ClubRef']
-        if not all(col in df.columns for col in required_cols):
-             st.error("Erreur: Le fichier FFE doit contenir les colonnes Nom, Cat, Elo et ClubRef.")
-             df = pd.DataFrame()
-        
-    except Exception as e:
-        st.error(f"Erreur de lecture du fichier : {e}. Vérifiez le format (séparateur ';', encodage 'latin-1').")
-else:
-    st.warning("Veuillez charger votre fichier FFE (TXT/CSV) dans la barre latérale.")
+    if not df.empty:
+        # Trouve tous les IDs uniques
+        unique_clubs = sorted(df['ClubRef'].dropna().unique().tolist())
+        # Tente de choisir un ID club par défaut
+        default_index = unique_clubs.index(999) if 999 in unique_clubs and 999 in unique_clubs else 0
+        club_id = st.selectbox("ID Club à filtrer", unique_clubs, index=default_index)
+    else:
+        st.error("Base FFE non chargée. Vérifiez l'URL dans le code `app.py`.")
+        club_id = st.number_input("ID Club (Non disponible)", value=0)
 
 
 # Si le fichier a été chargé et lu correctement:
@@ -166,7 +203,7 @@ if not df.empty:
                 new = st.text_input("Pseudo Lichess", value=curr)
                 if st.button("Lier"):
                     st.session_state['mappings'][p] = new
-                    save_mappings(st.session_state['mappings']) # NOUVEAU: Sauvegarde persistante
+                    save_mappings(st.session_state['mappings'])
                     st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
             
         with t3:
@@ -188,4 +225,8 @@ if not df.empty:
             else:
                 st.warning("Liez d'abord un pseudo dans l'onglet 2.")
     else:
-        st.error(f"Aucun joueur trouvé pour l'ID Club {club_id}. Vérifiez l'ID et les données chargées.")
+        st.error(f"Aucun joueur trouvé pour l'ID Club {club_id}. Vérifiez l'ID sélectionné.")
+
+# Message d'erreur si la base n'a pas pu être chargée du tout
+elif FFE_DATA_URL == "https://docs.google.com/spreadsheets/d/11z7ZwAVRKcTZsAdH_OF6_RO3nGhXNeGQ/edit?usp=sharing&ouid=103829879200976373237&rtpof=true&sd=true":
+     st.warning("⚠️ Veuillez remplacer VOTRE_URL_EXPORT_EXCEL par l'URL de votre fichier FFE hébergé.")
