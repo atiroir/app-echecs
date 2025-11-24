@@ -7,9 +7,31 @@ from collections import Counter
 from fpdf import FPDF
 import datetime
 import io
+import os # NOUVEAU: Pour la gestion du fichier
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="MasterCoach Echecs", layout="wide", page_icon="♟️")
+
+# --- PERSISTENCE (Sauvegarde des Liaisons) ---
+MAPPINGS_FILE = "mappings.json"
+
+def load_mappings():
+    # Tente de charger les mappings existants
+    try:
+        with open(MAPPINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        # Retourne un dictionnaire vide si le fichier n'existe pas ou est corrompu
+        return {}
+
+def save_mappings(mappings_dict):
+    # Sauvegarde les mappings dans le fichier JSON
+    try:
+        with open(MAPPINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(mappings_dict, f, indent=4)
+    except Exception as e:
+        st.error(f"Erreur lors de la sauvegarde des liaisons : {e}")
+
 
 # --- CLASS PDF ---
 class PDFReport(FPDF):
@@ -60,20 +82,6 @@ def create_pdf_download(target_name, pseudo, df_white, df_black):
     
     return pdf.output(dest='S').encode('latin-1')
 
-# --- DATA & API ---
-@st.cache_data
-def load_fake_ffe_database():
-    # SIMULATION BASE DE DONNEES
-    data = [
-        {"Nom": "VACHIER-LAGRAVE Maxime", "Elo": 2730, "Cat": "Senior", "ClubRef": 100},
-        {"Nom": "FIROUZJA Alireza", "Elo": 2780, "Cat": "Junior", "ClubRef": 100},
-        {"Nom": "PETIT Paul", "Elo": 1200, "Cat": "Poussin", "ClubRef": 999},
-        {"Nom": "GRAND Pierre", "Elo": 1450, "Cat": "Pupille", "ClubRef": 999},
-        {"Nom": "MOYEN Jacques", "Elo": 1600, "Cat": "Benjamin", "ClubRef": 999},
-        {"Nom": "FORT Marie", "Elo": 1900, "Cat": "Minime", "ClubRef": 999},
-    ]
-    return pd.DataFrame(data)
-
 def get_player_stats(username, nb_games=50):
     url = f"https://lichess.org/api/games/user/{username}?max={nb_games}&opening=true"
     headers = {"Accept": "application/x-ndjson"}
@@ -99,56 +107,85 @@ def get_player_stats(username, nb_games=50):
 
 # --- MAIN APP ---
 if 'mappings' not in st.session_state:
-    st.session_state['mappings'] = {"FIROUZJA Alireza": "Alireza2003"}
+    # Charge les données persistantes au démarrage
+    st.session_state['mappings'] = load_mappings() 
 
 st.title("♟️ MasterCoach - Manager")
 
+df = pd.DataFrame()
+uploaded_file = None
+
 with st.sidebar:
-    club_id = st.number_input("ID Club", value=999)
-    st.info("Pour tester: Club 999 (Jeunes) ou 100 (Stars)")
-
-df = load_fake_ffe_database()
-club_players = df[df['ClubRef'] == club_id]
-
-if not club_players.empty:
-    t1, t2, t3 = st.tabs(["📋 Équipe", "🔗 Liaison Lichess", "⚔️ Prépa Match"])
+    st.subheader("Chargement des Données FFE")
+    uploaded_file = st.file_uploader("Importer le fichier joueurs FFE (CSV ou TXT)", type=["csv", "txt"])
     
-    with t1:
-        st.dataframe(club_players)
-        st.subheader("Suggestion Top Jeunes")
-        cols = st.columns(4)
-        for i, cat in enumerate(["Minime", "Benjamin", "Pupille", "Poussin"]):
-            with cols[i]:
-                st.markdown(f"**{cat}**")
-                best = club_players[club_players['Cat'] == cat].nlargest(1, 'Elo')
-                if not best.empty: st.success(f"{best.iloc[0]['Nom']} ({best.iloc[0]['Elo']})")
-    
-    with t2:
-        p = st.selectbox("Joueur", club_players['Nom'])
-        curr = st.session_state['mappings'].get(p, "")
-        new = st.text_input("Pseudo Lichess", value=curr)
-        if st.button("Lier"):
-            st.session_state['mappings'][p] = new
-            st.success("Sauvegardé")
-            
-    with t3:
-        targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
-        if targets:
-            tgt = st.selectbox("Cible", targets)
-            pseudo = st.session_state['mappings'][tgt]
-            if st.button("Analyser"):
-                df_w, df_b = get_player_stats(pseudo)
-                if df_w is not None:
-                    c1, c2 = st.columns(2)
-                    with c1: 
-                        st.write("Blancs"); st.dataframe(df_w, hide_index=True)
-                    with c2: 
-                        st.write("Noirs"); st.dataframe(df_b, hide_index=True)
-                    
-                    pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
-                    st.download_button("📄 Télécharger PDF", pdf, "prepa.pdf", "application/pdf")
-        else:
-            st.warning("Liez d'abord un pseudo dans l'onglet 2.")
+    club_id = st.number_input("ID Club à filtrer", value=999)
+    st.info("Utilisez l'ID pour filtrer votre club. Ex: 999")
+
+if uploaded_file is not None:
+    try:
+        # Lecture du fichier FFE (souvent séparé par des points-virgules et encodé en latin-1)
+        df = pd.read_csv(uploaded_file, sep=';', encoding='latin-1', on_bad_lines='skip')
+        st.sidebar.success(f"{len(df)} joueurs chargés. Colonnes: {', '.join(df.columns)}")
+        
+        # S'assurer que les colonnes nécessaires existent
+        required_cols = ['Nom', 'Cat', 'Elo', 'ClubRef']
+        if not all(col in df.columns for col in required_cols):
+             st.error("Erreur: Le fichier FFE doit contenir les colonnes Nom, Cat, Elo et ClubRef.")
+             df = pd.DataFrame()
+        
+    except Exception as e:
+        st.error(f"Erreur de lecture du fichier : {e}. Vérifiez le format (séparateur ';', encodage 'latin-1').")
 else:
+    st.warning("Veuillez charger votre fichier FFE (TXT/CSV) dans la barre latérale.")
 
-    st.error("Club introuvable (essayez 999)")
+
+# Si le fichier a été chargé et lu correctement:
+if not df.empty:
+    club_players = df[df['ClubRef'] == club_id]
+    
+    if not club_players.empty:
+        t1, t2, t3 = st.tabs(["📋 Équipe", "🔗 Liaison Lichess", "⚔️ Prépa Match"])
+        
+        with t1:
+            st.dataframe(club_players)
+            st.subheader("Suggestion Top Jeunes")
+            cols = st.columns(4)
+            for i, cat in enumerate(["Minime", "Benjamin", "Pupille", "Poussin"]):
+                with cols[i]:
+                    st.markdown(f"**{cat}**")
+                    best = club_players[club_players['Cat'] == cat].nlargest(1, 'Elo')
+                    if not best.empty: st.success(f"{best.iloc[0]['Nom']} ({best.iloc[0]['Elo']})")
+        
+        with t2:
+            player_options = club_players['Nom'].unique() if 'Nom' in club_players.columns else []
+            p = st.selectbox("Joueur", player_options)
+            
+            if p:
+                curr = st.session_state['mappings'].get(p, "")
+                new = st.text_input("Pseudo Lichess", value=curr)
+                if st.button("Lier"):
+                    st.session_state['mappings'][p] = new
+                    save_mappings(st.session_state['mappings']) # NOUVEAU: Sauvegarde persistante
+                    st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
+            
+        with t3:
+            targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
+            if targets:
+                tgt = st.selectbox("Cible", targets)
+                pseudo = st.session_state['mappings'][tgt]
+                if st.button("Analyser"):
+                    df_w, df_b = get_player_stats(pseudo)
+                    if df_w is not None:
+                        c1, c2 = st.columns(2)
+                        with c1: 
+                            st.write("Blancs"); st.dataframe(df_w, hide_index=True)
+                        with c2: 
+                            st.write("Noirs"); st.dataframe(df_b, hide_index=True)
+                        
+                        pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
+                        st.download_button("📄 Télécharger PDF", pdf, "prepa.pdf", "application/pdf")
+            else:
+                st.warning("Liez d'abord un pseudo dans l'onglet 2.")
+    else:
+        st.error(f"Aucun joueur trouvé pour l'ID Club {club_id}. Vérifiez l'ID et les données chargées.")
