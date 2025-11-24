@@ -216,26 +216,22 @@ if not df.empty and club_id:
     club_players = df[df['ClubRef'] == club_id]
     
     if not club_players.empty:
+        # Définition des onglets
         t1, t2, t3 = st.tabs(["📋 Équipe", "🔗 Liaison Lichess", "⚔️ Prépa Match"])
         
-with t1:
+        with t1:
             st.header(f"Effectif : {selected_club_name} ({len(club_players)} Joueurs)")
             
-            # --- DEBUG (Optionnel : Affiche les catégories uniques trouvées pour comprendre le problème) ---
-            # st.write("Catégories trouvées dans le fichier :", club_players['Cat'].unique())
-            
             # 1. Préparation des données Jeunes (Normalisation)
-            # On crée une copie pour ne pas modifier l'original
             df_display = club_players.copy()
             
             # On crée une colonne temporaire 'Cat_Clean' : on met en majuscule et on prend les 3 premières lettres
-            # Ex: "Minime" -> "MIN", "BenM" -> "BEN", "Pup" -> "PUP"
             df_display['Cat_Clean'] = df_display['Cat'].astype(str).str.upper().str[:3]
             
             # Liste des codes cibles (3 lettres majuscules)
-            target_codes = ["POU", "PUP", "BEN", "MIN", "CAD", "PPO"] # J'ajoute PPO (Petits Poussins) au cas où
+            target_codes = ["POU", "PUP", "BEN", "MIN", "CAD", "PPO"] 
             
-            # Filtrage
+            # Filtrage des jeunes
             df_youth = df_display[df_display['Cat_Clean'].isin(target_codes)].sort_values(by=['Cat', 'Elo'], ascending=[True, False])
 
             st.subheader("👶 Joueurs Jeunes (Cadet et moins)")
@@ -251,7 +247,6 @@ with t1:
                     hide_index=True
                 )
             else:
-                # Si vide, on affiche ce qu'on a trouvé pour aider au diagnostic
                 st.warning("Aucun jeune trouvé. Voici les catégories détectées dans votre fichier :")
                 st.write(club_players['Cat'].unique())
                 
@@ -266,10 +261,9 @@ with t1:
             cols = st.columns(len(target_codes))
             for i, code in enumerate(target_codes):
                 with cols[i % len(cols)]: 
-                    # On cherche dans le dataframe qui a la colonne Cat_Clean
                     best = df_display[df_display['Cat_Clean'] == code].nlargest(1, 'Elo')
                     
-                    # Petit dictionnaire pour afficher un joli nom au lieu de BEN/MIN
+                    # Dictionnaire pour afficher un joli nom
                     labels = {"POU": "Poussin", "PUP": "Pupille", "BEN": "Benjamin", "MIN": "Minime", "CAD": "Cadet", "PPO": "P.Poussin"}
                     label_nice = labels.get(code, code)
                     
@@ -316,5 +310,3 @@ with t1:
 # Message d'avertissement initial si l'URL est le placeholder
 elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
-
-
