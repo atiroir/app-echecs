@@ -231,9 +231,8 @@ if not df.empty and club_id:
         
         df_youth = df_display[df_display['Cat_Clean'].isin(target_codes_youth)].copy()
         df_youth = df_youth.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
-        
         # ==========================================================
-        # 🚀 SECTION DÉPLACÉE EN HAUT DE PAGE
+        # 🚀 SECTION EN HAUT DE PAGE (Les Meilleurs Jeunes)
         # ==========================================================
         
         st.subheader(f"🥇 Les Meilleurs Jeunes du Club : {selected_club_name}")
@@ -252,7 +251,12 @@ if not df.empty and club_id:
                 st.markdown(f"**{label_nice}**")
                 if not best.empty:
                     best_player = best.iloc[0]
-                    st.metric(label=best_player['Nom'], value=f"{best_player['Elo']}")
+                    
+                    # --- CORRECTION DE L'ERREUR DE TYPE ---
+                    # Convertir le nom en chaîne de caractères et remplacer les valeurs manquantes par un placeholder
+                    player_name = str(best_player['Nom']) if pd.notna(best_player['Nom']) else "Nom Inconnu"
+                    
+                    st.metric(label=player_name, value=f"{best_player['Elo']}")
                 else:
                     st.caption("-")
         
@@ -347,3 +351,4 @@ if not df.empty and club_id:
 # Message d'avertissement initial si l'URL est le placeholder
 elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
