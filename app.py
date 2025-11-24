@@ -163,18 +163,57 @@ st.title("♟️ MasterCoach - Manager")
 # CHARGEMENT PERMANENT DE LA BASE FFE
 df = load_permanent_ffe_data(FFE_DATA_URL)
 
+# Fichier: app.py (dans la section MAIN APP)
+
+# ... (le code avant with st.sidebar:) ...
+
 with st.sidebar:
     st.subheader("Configuration du Club")
     
     if not df.empty:
-        # Trouve tous les IDs uniques
-        unique_clubs = sorted(df['ClubRef'].dropna().unique().tolist())
-        # Tente de choisir un ID club par défaut
-        default_index = unique_clubs.index(999) if 999 in unique_clubs and 999 in unique_clubs else 0
-        club_id = st.selectbox("ID Club à filtrer", unique_clubs, index=default_index)
+        # Créer un DataFrame des clubs uniques (Nom Club et ClubRef)
+        df_clubs_map = df[['ClubRef', 'Nom Club']].drop_duplicates().dropna(subset=['Nom Club'])
+        
+        # Créer un dictionnaire Nom -> ID
+        club_name_to_id = pd.Series(df_clubs_map['ClubRef'].values, 
+                                    index=df_clubs_map['Nom Club']).to_dict()
+        
+        # Créer la liste des noms pour le SelectBox (triée)
+        club_names = sorted(club_name_to_id.keys())
+        
+        # Tenter de sélectionner le club de l'utilisateur s'il existe (ex: 'AS P' pour les tests)
+        default_index = 0
+        try:
+             # Si vous voulez cibler votre club par défaut, changez cette logique
+             user_club_name = df_clubs_map.loc[df_clubs_map['ClubRef'] == 999, 'Nom Club'].iloc[0]
+             default_index = club_names.index(user_club_name)
+        except:
+             pass
+
+        # 1. Utiliser le Nom du Club dans le SelectBox
+        selected_club_name = st.selectbox(
+            "Nom du Club à filtrer", 
+            club_names, 
+            index=default_index
+        )
+        
+        # 2. Récupérer l'ID correspondant au nom sélectionné
+        club_id = club_name_to_id.get(selected_club_name)
+
+        # Affichage de confirmation (optionnel, pour le debug)
+        st.caption(f"ID Club sélectionné : {club_id}")
+        
     else:
-        st.error("Base FFE non chargée. Vérifiez l'URL dans le code `app.py`.")
-        club_id = st.number_input("ID Club (Non disponible)", value=0)
+        st.error("Base FFE non chargée.")
+        club_id = 0
+
+
+# Le reste du code utilise maintenant 'club_id' pour filtrer la base:
+if not df.empty and club_id:
+    # FILTRAGE FINAL PAR L'ID RÉCUPÉRÉ
+    club_players = df[df['ClubRef'] == club_id]
+    
+# ... (le reste du code) ...
 
 
 # Si le fichier a été chargé et lu correctement:
@@ -230,5 +269,6 @@ if not df.empty:
 # Message d'erreur si la base n'a pas pu être chargée du tout
 elif FFE_DATA_URL == "VOTRE_URL_EXPORT_EXCEL":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_EXPORT_EXCEL par l'URL de votre fichier FFE hébergé.")
+
 
 
