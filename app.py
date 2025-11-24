@@ -218,11 +218,25 @@ if not df.empty and club_id:
     if not club_players.empty:
         t1, t2, t3 = st.tabs(["📋 Équipe", "🔗 Liaison Lichess", "⚔️ Prépa Match"])
         
-        with t1:
+with t1:
             st.header(f"Effectif : {selected_club_name} ({len(club_players)} Joueurs)")
             
-            youth_cats = ["Poussin", "Pupille", "Benjamin", "Minime", "Cadet"]
-            df_youth = club_players[club_players['Cat'].isin(youth_cats)].sort_values(by=['Cat', 'Elo'], ascending=[True, False])
+            # --- DEBUG (Optionnel : Affiche les catégories uniques trouvées pour comprendre le problème) ---
+            # st.write("Catégories trouvées dans le fichier :", club_players['Cat'].unique())
+            
+            # 1. Préparation des données Jeunes (Normalisation)
+            # On crée une copie pour ne pas modifier l'original
+            df_display = club_players.copy()
+            
+            # On crée une colonne temporaire 'Cat_Clean' : on met en majuscule et on prend les 3 premières lettres
+            # Ex: "Minime" -> "MIN", "BenM" -> "BEN", "Pup" -> "PUP"
+            df_display['Cat_Clean'] = df_display['Cat'].astype(str).str.upper().str[:3]
+            
+            # Liste des codes cibles (3 lettres majuscules)
+            target_codes = ["POU", "PUP", "BEN", "MIN", "CAD", "PPO"] # J'ajoute PPO (Petits Poussins) au cas où
+            
+            # Filtrage
+            df_youth = df_display[df_display['Cat_Clean'].isin(target_codes)].sort_values(by=['Cat', 'Elo'], ascending=[True, False])
 
             st.subheader("👶 Joueurs Jeunes (Cadet et moins)")
             
@@ -237,7 +251,9 @@ if not df.empty and club_id:
                     hide_index=True
                 )
             else:
-                st.info("Aucun jeune trouvé dans les catégories Poussin à Cadet.")
+                # Si vide, on affiche ce qu'on a trouvé pour aider au diagnostic
+                st.warning("Aucun jeune trouvé. Voici les catégories détectées dans votre fichier :")
+                st.write(club_players['Cat'].unique())
                 
             st.divider()
 
@@ -246,11 +262,18 @@ if not df.empty and club_id:
             
             st.subheader("⭐ Les meilleurs par catégorie")
             
-            cols = st.columns(len(youth_cats))
-            for i, cat in enumerate(youth_cats):
+            # Pour l'affichage des meilleurs, on utilise aussi la version nettoyée
+            cols = st.columns(len(target_codes))
+            for i, code in enumerate(target_codes):
                 with cols[i % len(cols)]: 
-                    best = club_players[club_players['Cat'] == cat].nlargest(1, 'Elo')
-                    st.markdown(f"**{cat}**")
+                    # On cherche dans le dataframe qui a la colonne Cat_Clean
+                    best = df_display[df_display['Cat_Clean'] == code].nlargest(1, 'Elo')
+                    
+                    # Petit dictionnaire pour afficher un joli nom au lieu de BEN/MIN
+                    labels = {"POU": "Poussin", "PUP": "Pupille", "BEN": "Benjamin", "MIN": "Minime", "CAD": "Cadet", "PPO": "P.Poussin"}
+                    label_nice = labels.get(code, code)
+                    
+                    st.markdown(f"**{label_nice}**")
                     if not best.empty:
                         best_player = best.iloc[0]
                         st.metric(label=best_player['Nom'], value=f"{best_player['Elo']}")
@@ -293,4 +316,5 @@ if not df.empty and club_id:
 # Message d'avertissement initial si l'URL est le placeholder
 elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
 
