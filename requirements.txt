@@ -2,3 +2,5 @@ streamlit
 pandas
 requests
 fpdf
+openpyxl  # Nécessaire pour les fichiers XLSX/XLS (format moderne)
+xlrd      # Nécessaire pour les fichiers XLS (format ancien)
