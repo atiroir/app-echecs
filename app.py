@@ -9,9 +9,9 @@ import datetime
 import io
 import os
 
-# --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN EXCEL PUBLIC !) ---
-# Cette URL doit pointer vers un fichier .xls ou .xlsx contenant les feuilles "joueur" et "club".
-FFE_DATA_URL = "http://basilevinet.com/data/BaseFFE.xls" 
+# --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN OVH !) ---
+# Exemple d'URL : http://basilevinet.com/data/BaseFFE.xls
+FFE_DATA_URL = "VOTRE_URL_STABLE_OVH_ICI" 
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="♟️ MasterCoach", layout="wide", page_icon="♟️")
@@ -23,9 +23,17 @@ MAPPINGS_FILE = "mappings.json"
 def load_mappings():
     # Tente de charger les mappings existants
     try:
-        with open(MAPPINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        # Tente de lire depuis le dossier de l'application ou le répertoire de travail
+        if os.path.exists(MAPPINGS_FILE):
+             with open(MAPPINGS_FILE, "r", encoding="utf-8") as f:
+                 return json.load(f)
+        else:
+             return {}
+    except json.JSONDecodeError:
+        st.warning("Fichier mappings.json vide ou mal formé. Création d'un nouveau fichier.")
+        return {}
+    except Exception as e:
+        st.error(f"Erreur lors du chargement des mappings : {e}")
         return {}
 
 def save_mappings(mappings_dict):
@@ -36,49 +44,45 @@ def save_mappings(mappings_dict):
     except Exception as e:
         st.error(f"Erreur lors de la sauvegarde des liaisons : {e}")
         
-# --- FONCTION DE CHARGEMENT PERMANENT PAR URL (Lecture XLSX/XLS) ---
+# --- FONCTION DE CHARGEMENT PERMANENT PAR URL (Lecture XLS/XLSX) ---
 @st.cache_data
 def load_permanent_ffe_data(url):
     try:
-        # Tente de lire les deux feuilles du fichier Excel hébergé
+        # pd.read_excel lit les deux formats (.xls et .xlsx) et gère les onglets
         all_sheets = pd.read_excel(url, sheet_name=None)
         
-        # S'assurer que les feuilles existent après conversion
+        # S'assurer que les feuilles existent (noms attendus : joueur et club, en minuscules)
         df_joueurs = all_sheets.get("joueur")
         df_clubs = all_sheets.get("club")     
         
         if df_joueurs is None or df_clubs is None:
+             # Affiche l'erreur si les onglets ne sont pas trouvés
              st.error("Erreur: Impossible de trouver les feuilles nommées 'joueur' et 'club' dans le fichier Excel.")
              return pd.DataFrame()
         
-        # 1. Préparation et jointure des données
-        
-        # Nettoyage et combinaison des noms de joueurs (Nom Prenom)
+        # 1. Nettoyage et combinaison des noms de joueurs (Nom Prenom)
         df_joueurs['Nom Joueur'] = df_joueurs['Nom'].str.upper() + ' ' + df_joueurs['Prenom'].str.title()
         
-        # Renommage des colonnes des clubs pour la jointure
+        # 2. Renommage des colonnes des clubs pour la jointure
         df_clubs = df_clubs.rename(columns={'Ref': 'ClubRef', 'Nom': 'Nom Club'})
-        
-        # Sélection des colonnes essentielles pour la jointure
         df_clubs = df_clubs[['ClubRef', 'Nom Club']]
         
-        # Jointure des joueurs et des noms de clubs
+        # 3. Jointure des joueurs et des noms de clubs
         df_final = pd.merge(df_joueurs, df_clubs, on='ClubRef', how='left')
         
-        # Conversion du ClubRef en entier
+        # 4. Conversion du ClubRef en entier
         df_final['ClubRef'] = pd.to_numeric(df_final['ClubRef'], errors='coerce').astype('Int64')
         
-        # Sélection des colonnes finales pour l'application
+        # 5. Sélection et renommage des colonnes finales
         df_final = df_final[['Nom Joueur', 'Cat', 'Elo', 'ClubRef', 'Nom Club']].copy()
-
-        # Renommage pour correspondre au reste de l'application
         df_final = df_final.rename(columns={'Nom Joueur': 'Nom'}) 
         
         st.sidebar.success(f"{len(df_final)} joueurs chargés et joints avec les clubs.")
         return df_final
         
     except Exception as e:
-        st.error(f"Erreur de chargement de la base FFE. Vérifiez que l'URL est correcte et que le fichier est public. Détail: {e}")
+        # Cette erreur s'affichera en cas d'échec du téléchargement ou d'une erreur de format
+        st.error(f"Erreur de chargement de la base FFE. Vérifiez l'URL et le nom des onglets ('joueur', 'club'). Détail: {e}")
         return pd.DataFrame()
 
 # --- CLASS PDF / get_player_stats (Identique) ---
@@ -163,10 +167,6 @@ st.title("♟️ MasterCoach - Manager")
 # CHARGEMENT PERMANENT DE LA BASE FFE
 df = load_permanent_ffe_data(FFE_DATA_URL)
 
-# Fichier: app.py (dans la section MAIN APP)
-
-# ... (le code avant with st.sidebar:) ...
-
 with st.sidebar:
     st.subheader("Configuration du Club")
     
@@ -174,19 +174,20 @@ with st.sidebar:
         # Créer un DataFrame des clubs uniques (Nom Club et ClubRef)
         df_clubs_map = df[['ClubRef', 'Nom Club']].drop_duplicates().dropna(subset=['Nom Club'])
         
-        # Créer un dictionnaire Nom -> ID
+        # Créer un dictionnaire Nom -> ID pour le filtrage
         club_name_to_id = pd.Series(df_clubs_map['ClubRef'].values, 
                                     index=df_clubs_map['Nom Club']).to_dict()
         
         # Créer la liste des noms pour le SelectBox (triée)
         club_names = sorted(club_name_to_id.keys())
         
-        # Tenter de sélectionner le club de l'utilisateur s'il existe (ex: 'AS P' pour les tests)
+        # Tenter de déterminer un index par défaut (sinon 0)
         default_index = 0
         try:
-             # Si vous voulez cibler votre club par défaut, changez cette logique
-             user_club_name = df_clubs_map.loc[df_clubs_map['ClubRef'] == 999, 'Nom Club'].iloc[0]
-             default_index = club_names.index(user_club_name)
+             # Tentative de cibler un club spécifique s'il existe (à changer si besoin)
+             # user_club_name = df_clubs_map.loc[df_clubs_map['ClubRef'] == 999, 'Nom Club'].iloc[0]
+             # default_index = club_names.index(user_club_name)
+             pass
         except:
              pass
 
@@ -200,38 +201,61 @@ with st.sidebar:
         # 2. Récupérer l'ID correspondant au nom sélectionné
         club_id = club_name_to_id.get(selected_club_name)
 
-        # Affichage de confirmation (optionnel, pour le debug)
+        # Affichage de l'ID Club (optionnel)
         st.caption(f"ID Club sélectionné : {club_id}")
         
     else:
-        st.error("Base FFE non chargée.")
+        # Message si le chargement a échoué
+        st.error("Base FFE non chargée. Vérifiez l'URL dans le code app.py.")
         club_id = 0
 
 
-# Le reste du code utilise maintenant 'club_id' pour filtrer la base:
+# --- Affichage du Contenu Principal ---
 if not df.empty and club_id:
     # FILTRAGE FINAL PAR L'ID RÉCUPÉRÉ
-    club_players = df[df['ClubRef'] == club_id]
-    
-# ... (le reste du code) ...
-
-
-# Si le fichier a été chargé et lu correctement:
-if not df.empty:
     club_players = df[df['ClubRef'] == club_id]
     
     if not club_players.empty:
         t1, t2, t3 = st.tabs(["📋 Équipe", "🔗 Liaison Lichess", "⚔️ Prépa Match"])
         
         with t1:
-            st.dataframe(club_players)
-            st.subheader("Suggestion Top Jeunes")
-            cols = st.columns(4)
-            for i, cat in enumerate(["Minime", "Benjamin", "Pupille", "Poussin"]):
-                with cols[i]:
-                    st.markdown(f"**{cat}**")
+            st.header(f"Effectif : {selected_club_name} ({len(club_players)} Joueurs)")
+            
+            youth_cats = ["Poussin", "Pupille", "Benjamin", "Minime", "Cadet"]
+            df_youth = club_players[club_players['Cat'].isin(youth_cats)].sort_values(by=['Cat', 'Elo'], ascending=[True, False])
+
+            st.subheader("👶 Joueurs Jeunes (Cadet et moins)")
+            
+            if not df_youth.empty:
+                st.dataframe(
+                    df_youth[['Nom', 'Cat', 'Elo']],
+                    column_config={
+                        "Nom": "Nom",
+                        "Cat": "Catégorie",
+                        "Elo": st.column_config.NumberColumn("ELO FFE", format="%d")
+                    },
+                    hide_index=True
+                )
+            else:
+                st.info("Aucun jeune trouvé dans les catégories Poussin à Cadet.")
+                
+            st.divider()
+
+            st.subheader("📚 Effectif Complet du Club")
+            st.dataframe(club_players[['Nom', 'Cat', 'Elo', 'Nom Club']], hide_index=True)
+            
+            st.subheader("⭐ Les meilleurs par catégorie")
+            
+            cols = st.columns(len(youth_cats))
+            for i, cat in enumerate(youth_cats):
+                with cols[i % len(cols)]: 
                     best = club_players[club_players['Cat'] == cat].nlargest(1, 'Elo')
-                    if not best.empty: st.success(f"{best.iloc[0]['Nom']} ({best.iloc[0]['Elo']})")
+                    st.markdown(f"**{cat}**")
+                    if not best.empty:
+                        best_player = best.iloc[0]
+                        st.metric(label=best_player['Nom'], value=f"{best_player['Elo']}")
+                    else:
+                        st.caption("-")
         
         with t2:
             player_options = club_players['Nom'].unique() if 'Nom' in club_players.columns else []
@@ -262,13 +286,10 @@ if not df.empty:
                         pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
                         st.download_button("📄 Télécharger PDF", pdf, "prepa.pdf", "application/pdf")
             else:
-                st.warning("Liez d'abord un pseudo dans l'onglet 2.")
+                st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur.")
     else:
-        st.error(f"Aucun joueur trouvé pour l'ID Club {club_id}. Vérifiez l'ID sélectionné.")
+        st.error(f"Aucun joueur trouvé pour le club sélectionné.")
 
-# Message d'erreur si la base n'a pas pu être chargée du tout
-elif FFE_DATA_URL == "VOTRE_URL_EXPORT_EXCEL":
-     st.warning("⚠️ Veuillez remplacer VOTRE_URL_EXPORT_EXCEL par l'URL de votre fichier FFE hébergé.")
-
-
-
+# Message d'avertissement initial si l'URL est le placeholder
+elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
+     st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
