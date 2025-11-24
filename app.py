@@ -216,94 +216,101 @@ if not df.empty and club_id:
     club_players = df[df['ClubRef'] == club_id]
     
     if not club_players.empty:
-        # Définition des onglets
+        
+        # --- PREPARATION DES DONNÉES (DOIT ÊTRE FAIT EN PREMIER) ---
+        df_display = club_players.copy()
+        df_display['Cat_Clean'] = df_display['Cat'].astype(str).str.upper().str[:3]
+        
+        # Codes FFE dans l'ordre
+        ALL_TARGET_CODES = ["PPO", "POU", "PUP", "BEN", "MIN", "CAD", "JUN"] 
+        target_codes_youth = ["PPO", "POU", "PUP", "BEN", "MIN"] 
+        
+        # Ajout d'une colonne pour le tri basé sur l'ordre FFE
+        cat_order = {code: i for i, code in enumerate(ALL_TARGET_CODES)}
+        df_display['Sort_Order'] = df_display['Cat_Clean'].map(cat_order).fillna(999) 
+        
+        df_youth = df_display[df_display['Cat_Clean'].isin(target_codes_youth)].copy()
+        df_youth = df_youth.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
+        
+        # ==========================================================
+        # 🚀 SECTION DÉPLACÉE EN HAUT DE PAGE
+        # ==========================================================
+        
+        st.subheader(f"🥇 Les Meilleurs Jeunes du Club : {selected_club_name}")
+        
+        cols = st.columns(len(target_codes_youth))
+        
+        for i, code in enumerate(target_codes_youth):
+            with cols[i]:
+                labels = {"PPO": "P. Poussin", "POU": "Poussin", "PUP": "Pupille", "BEN": "Benjamin", "MIN": "Minime"}
+                label_nice = labels.get(code, code)
+                
+                # On cherche le meilleur (nlargest(1))
+                best = df_display[df_display['Cat_Clean'] == code].nlargest(1, 'Elo')
+                
+                # Affichage
+                st.markdown(f"**{label_nice}**")
+                if not best.empty:
+                    best_player = best.iloc[0]
+                    st.metric(label=best_player['Nom'], value=f"{best_player['Elo']}")
+                else:
+                    st.caption("-")
+        
+        st.markdown("---") # Séparateur visuel entre la section TOP et les onglets
+
+        # ==========================================================
+        # DÉBUT DES ONGLETS
+        # ==========================================================
+        
         t1, t2, t3 = st.tabs(["📋 Équipe", "🔗 Liaison Lichess", "⚔️ Prépa Match"])
         
         with t1:
-            st.header(f"Effectif : {selected_club_name} ({len(club_players)} Joueurs)")
+            st.header(f"Détail de l'Effectif ({len(club_players)} Joueurs)")
             
-            # --- 1. Préparation des données Jeunes (Normalisation) ---
-            df_display = club_players.copy()
-            
-            # On crée une colonne temporaire 'Cat_Clean' : on met en majuscule et on prend les 3 premières lettres
-            df_display['Cat_Clean'] = df_display['Cat'].astype(str).str.upper().str[:3]
-            
-            # Liste des codes cibles DANS L'ORDRE FFE SOUHAITÉ (du plus jeune au plus âgé)
-            # PPO: Petits Poussins, POU: Poussins, PUP: Pupilles, BEN: Benjamins, MIN: Minimes
-            # J'ajoute Cadet et Junior pour l'ordre complet, même si l'affichage principal s'arrête à MIN
-            ALL_TARGET_CODES = ["PPO", "POU", "PUP", "BEN", "MIN", "CAD", "JUN"] 
-            
-            # Codes pour l'affichage 'Minimes et moins'
-            target_codes_youth = ["PPO", "POU", "PUP", "BEN", "MIN"] 
-            
-            # Filtrage des jeunes (Minimes et moins)
-            df_youth = df_display[df_display['Cat_Clean'].isin(target_codes_youth)].copy()
-            
-            # --- Ajout d'une colonne pour le tri basé sur l'ordre FFE fourni ---
-            # Crée un mapping Nom_code -> Ordre (PPO=0, POU=1, PUP=2, etc.)
-            cat_order = {code: i for i, code in enumerate(ALL_TARGET_CODES)}
-            df_youth['Sort_Order'] = df_youth['Cat_Clean'].map(cat_order)
-            
-            # Tri final par l'ordre FFE, puis par ELO décroissant
-            df_youth = df_youth.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
-
-            # --- Affichage renommé ---
-            st.subheader("👶 Joueurs Jeunes (Minimes et moins)")
+            # --- Affichage 1: Top 4 par Catégorie (Tableaux) ---
+            st.subheader("👶 Top 4 Joueurs Jeunes (Minimes et moins)")
             
             if not df_youth.empty:
-                st.markdown("### Top 4 Joueurs par Catégorie")
-                
                 cols_per_row = 3
                 
-                # Utilisation de la liste triée pour l'affichage
                 for i, code in enumerate(target_codes_youth): 
-                    # Définition des labels pour l'affichage
                     labels = {"PPO": "P. Poussin", "POU": "Poussin", "PUP": "Pupille", "BEN": "Benjamin", "MIN": "Minime"}
                     label_nice = labels.get(code, code)
                     
-                    # On cherche le top 4 pour cette catégorie
                     top_4 = df_youth[df_youth['Cat_Clean'] == code].nlargest(4, 'Elo')
                     
                     if not top_4.empty:
-                        # Créer une nouvelle ligne de colonnes après 3 catégories
                         if i % cols_per_row == 0:
                             if i > 0:
-                                st.markdown("---") 
+                                st.markdown("---")
                             cols = st.columns(cols_per_row)
                             
                         with cols[i % cols_per_row]: 
                             st.markdown(f"**{label_nice}**")
-                            # Afficher le tableau du top 4
                             st.dataframe(
                                 top_4[['Nom', 'Elo']],
-                                column_config={
-                                    "Nom": "Nom",
-                                    "Elo": st.column_config.NumberColumn("ELO", format="%d")
-                                },
+                                column_config={"Nom": "Nom", "Elo": st.column_config.NumberColumn("ELO", format="%d")},
                                 hide_index=True,
                                 height=(4 * 35) + 30
                             )
 
             else:
                 st.warning("Aucun jeune (P. Poussin à Minime) trouvé dans l'effectif actuel.")
-                st.info("Voici les catégories brutes détectées dans votre fichier (pour diagnostic) :")
+                st.info("Catégories brutes détectées :")
                 st.write(club_players['Cat'].unique())
                 
             st.divider()
 
+            # --- Affichage 2: Effectif Complet du Club ---
             st.subheader("📚 Effectif Complet du Club")
-            # Le tri du tableau complet utilise maintenant le tri FFE
-            df_full_sorted = df_display.copy()
-            df_full_sorted['Sort_Order'] = df_full_sorted['Cat_Clean'].map(cat_order)
             
-            # Remplacer les NaN (adultes ou autres) par une valeur élevée pour les mettre à la fin
-            df_full_sorted['Sort_Order'] = df_full_sorted['Sort_Order'].fillna(999) 
+            # Utilise le tri FFE pour le tableau complet
+            df_full_sorted = df_display.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
             
-            df_full_sorted = df_full_sorted.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
-            
-            st.dataframe(df_full_sorted[['Nom', 'Cat', 'Elo', 'Nom Club', 'Sort_Order']], hide_index=True)
+            st.dataframe(df_full_sorted[['Nom', 'Cat', 'Elo', 'Nom Club']], hide_index=True)
         
         with t2:
+            # ... (Logique de l'onglet Liaison Lichess) ...
             player_options = club_players['Nom'].unique() if 'Nom' in club_players.columns else []
             p = st.selectbox("Joueur", player_options)
             
@@ -316,6 +323,7 @@ if not df.empty and club_id:
                     st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
             
         with t3:
+            # ... (Logique de l'onglet Prépa Match) ...
             targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
             if targets:
                 tgt = st.selectbox("Cible", targets)
@@ -339,4 +347,3 @@ if not df.empty and club_id:
 # Message d'avertissement initial si l'URL est le placeholder
 elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
-
