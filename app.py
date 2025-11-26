@@ -8,6 +8,61 @@ from fpdf import FPDF
 import datetime
 import io
 import os
+from bs4 import BeautifulSoup
+# ... (le reste des imports) ...
+
+def get_snoopchess_stats(username):
+    # Remplacez chess.com par lichess pour le snoop
+    url = f"https://snoopchess.com/snoop/lichess/{username}"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        if response.status_code != 200:
+            return None, None
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Le scraping est très spécifique à la structure actuelle du site.
+        # On cible les cartes d'ouvertures (Opening Cards)
+        
+        # Extraction pour les Blancs
+        white_container = soup.find('div', id='white')
+        df_w = extract_openings_from_html(white_container)
+        
+        # Extraction pour les Noirs
+        black_container = soup.find('div', id='black')
+        df_b = extract_openings_from_html(black_container)
+
+        return df_w, df_b
+        
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Impossible de contacter SnoopChess ou Timeout. Erreur: {e}")
+        return None, None
+
+def extract_openings_from_html(container):
+    if not container:
+        return pd.DataFrame({'Ouverture': [], 'Fréquence': []})
+
+    # Trouver toutes les lignes de répertoires
+    rows = container.find_all('div', class_='text-sm') 
+    
+    data = []
+    for row in rows[:5]: # On ne prend que le top 5
+        # Le nom est souvent dans le premier span
+        opening_name = row.find('span', class_='text-gray-500')
+        if not opening_name: continue
+        
+        # La fréquence est dans l'élément parent qui contient le nom
+        # On va tenter d'extraire la fréquence brute (le pourcentage)
+        frequency_text = row.find('div', class_='w-1/4').text.strip()
+        
+        data.append({
+            'Ouverture': opening_name.text.strip(),
+            'Fréquence': frequency_text
+        })
+    
+    return pd.DataFrame(data)
+
 
 # --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN OVH !) ---
 # Exemple d'URL : http://basilevinet.com/data/BaseFFE.xls
@@ -301,13 +356,28 @@ if not df.empty and club_id:
                     save_mappings(st.session_state['mappings'])
                     st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
             
-        with t3:
+with t3:
+            st.header("⚔️ Préparation de Match")
             targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
+            
             if targets:
-                tgt = st.selectbox("Cible", targets)
+                tgt = st.selectbox("Cible (Joueur de votre club)", targets)
                 pseudo = st.session_state['mappings'][tgt]
-                if st.button("Analyser"):
-                    df_w, df_b = get_player_stats(pseudo)
+                
+                analysis_type = st.radio("Source de l'Analyse", ["Lichess (API Officielle)", "SnoopChess (Web Scraping)"], horizontal=True)
+                
+                if st.button("Analyser le Répertoire"):
+                    
+                    if analysis_type == "Lichess (API Officielle)":
+                        st.subheader("Analyse Lichess (Jeu Récent)")
+                        df_w, df_b = get_player_stats(pseudo)
+                        
+                    elif analysis_type == "SnoopChess (Web Scraping)":
+                        st.subheader("Analyse SnoopChess (Répertoire Ciblé)")
+                        st.warning("⚠️ L'analyse SnoopChess est basée sur du Web Scraping et peut être lente ou échouer si le site change.")
+                        df_w, df_b = get_snoopchess_stats(pseudo)
+                        
+                    
                     if df_w is not None:
                         c1, c2 = st.columns(2)
                         with c1: 
@@ -315,13 +385,20 @@ if not df.empty and club_id:
                         with c2: 
                             st.write("Noirs"); st.dataframe(df_b, hide_index=True)
                         
+                        # Création du PDF (utilise les données actuelles de l'analyse)
                         pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
-                        st.download_button("📄 Télécharger PDF", pdf, "prepa.pdf", "application/pdf")
+                        st.download_button("📄 Télécharger PDF de Prépa", pdf, "prepa_match.pdf", "application/pdf")
+                    else:
+                        st.error("Impossible de récupérer les données pour l'analyse sélectionnée.")
+                        
+                # Lien direct (toujours utile)
+                st.markdown(f"---")
+                st.markdown(f"**Lien direct SnoopChess :** [Consulter la page de {pseudo}](https://snoopchess.com/snoop/lichess/{pseudo})")
+
             else:
-                st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur.")
-    else:
-        st.error(f"Aucun joueur trouvé pour le club sélectionné.")
+                st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur avant de lancer l'analyse.")
 
 # Message d'avertissement initial si l'URL est le placeholder
 elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
