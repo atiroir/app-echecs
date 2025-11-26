@@ -326,29 +326,60 @@ if not df.empty and club_id:
                     save_mappings(st.session_state['mappings'])
                     st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
             
-        with t3:
-            # ... (Logique de l'onglet Prépa Match) ...
-            targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
-            if targets:
-                tgt = st.selectbox("Cible", targets)
-                pseudo = st.session_state['mappings'][tgt]
-                if st.button("Analyser"):
+# ... (le début du code reste identique) ...
+
+    with t3:
+        # On filtre les joueurs qui ont un mapping Lichess OU ceux qu'on veut juste chercher sur SnoopChess
+        # Ici on prend tous les joueurs du club adverse (même sans pseudo Lichess)
+        targets = club_players['Nom'].tolist()
+        
+        if targets:
+            col_sel, col_action = st.columns([2, 1])
+            with col_sel:
+                tgt = st.selectbox("Adversaire à analyser", targets)
+            
+            # --- NOUVEAU : INTEGRATION SNOOPCHESS ---
+            import urllib.parse
+            # On encode le nom pour qu'il passe dans une URL (ex: "DUPONT Jean" devient "DUPONT%20Jean")
+            safe_name = urllib.parse.quote(tgt)
+            snoop_url = f"https://snoopchess.com/snoop/?q={safe_name}"
+            
+            st.markdown("### 🔎 Liens rapides")
+            # Un bouton lien qui ouvre un nouvel onglet
+            st.link_button(f"🕵️ Voir l'historique de {tgt} sur SnoopChess", snoop_url)
+            
+            st.markdown("---")
+            
+            # --- SUITE : ANALYSE LICHESS (Si dispo) ---
+            pseudo = st.session_state['mappings'].get(tgt)
+            
+            if pseudo:
+                st.write(f"**Analyse Technique (Lichess : {pseudo})**")
+                if st.button("Lancer l'analyse des ouvertures"):
                     df_w, df_b = get_player_stats(pseudo)
+                    
                     if df_w is not None:
                         c1, c2 = st.columns(2)
                         with c1: 
-                            st.write("Blancs"); st.dataframe(df_w, hide_index=True)
+                            st.write("⚪ Avec les Blancs")
+                            st.dataframe(df_w, hide_index=True, use_container_width=True)
                         with c2: 
-                            st.write("Noirs"); st.dataframe(df_b, hide_index=True)
+                            st.write("⚫ Avec les Noirs")
+                            st.dataframe(df_b, hide_index=True, use_container_width=True)
                         
+                        # Génération PDF
                         pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
-                        st.download_button("📄 Télécharger PDF", pdf, "prepa.pdf", "application/pdf")
+                        st.download_button("📄 Télécharger la Fiche PDF", pdf, f"Prepa_{tgt}.pdf", "application/pdf")
+                    else:
+                        st.error("Erreur lors de la récupération Lichess.")
             else:
-                st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur.")
-    else:
-        st.error(f"Aucun joueur trouvé pour le club sélectionné.")
+                st.info(f"Pas de pseudo Lichess lié pour {tgt}. Vous ne pouvez utiliser que SnoopChess pour l'instant (Allez dans l'onglet 'Liaison Lichess' pour ajouter un pseudo).")
+
+        else:
+            st.warning("Aucun joueur trouvé dans ce club.")
 
 # Message d'avertissement initial si l'URL est le placeholder
 elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
 
