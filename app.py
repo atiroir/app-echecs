@@ -357,13 +357,17 @@ if not df.empty and club_id:
                     save_mappings(st.session_state['mappings'])
                     st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
             
-        with t3:
+with t3:
             st.header("⚔️ Préparation de Match")
             targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
             
             if targets:
                 tgt = st.selectbox("Cible (Joueur de votre club)", targets)
                 pseudo = st.session_state['mappings'][tgt]
+                
+                # --- NOUVEAU : Affichage du lien direct ici ---
+                st.markdown(f"**Analyse Externe :** [Consulter la page de {pseudo} sur SnoopChess](https://snoopchess.com/snoop/lichess/{pseudo})")
+                st.markdown("---")
                 
                 analysis_type = st.radio("Source de l'Analyse", ["Lichess (API Officielle)", "SnoopChess (Web Scraping)"], horizontal=True)
                 
@@ -391,14 +395,10 @@ if not df.empty and club_id:
                     else:
                         st.error("Impossible de récupérer ou de traiter les données pour l'analyse sélectionnée.")
                         
-                st.markdown(f"---")
-                st.markdown(f"**Lien direct SnoopChess :** [Consulter la page de {pseudo}](https://snoopchess.com/snoop/lichess/{pseudo})")
-
             else:
                 st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur avant de lancer l'analyse.")
-    else:
-        st.error(f"Aucun joueur trouvé pour le club sélectionné.")
 
 # Message d'avertissement initial si l'URL est le placeholder
 else: 
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
