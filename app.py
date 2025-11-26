@@ -1,385 +1,415 @@
-# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import requests
+from bs4 import BeautifulSoup
 import json
 from collections import Counter
 from fpdf import FPDF
 import datetime
+import urllib.parse
+import time
 import io
-import os
 
-# --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN OVH !) ---
-# Exemple d'URL : http://basilevinet.com/data/BaseFFE.xls
-FFE_DATA_URL = "http://basilevinet.com/data/BaseFFE.xls" 
+# ==============================================================================
+# 1. CONFIGURATION & STYLES
+# ==============================================================================
+st.set_page_config(
+    page_title="Gemini Chess Manager",
+    layout="wide",
+    page_icon="♟️",
+    initial_sidebar_state="expanded"
+)
 
-# --- CONFIGURATION ---
-st.set_page_config(page_title="♟️ MasterCoach", layout="wide", page_icon="♟️")
+# Petit CSS pour améliorer l'apparence des tableaux
+st.markdown("""
+<style>
+    .stDataFrame { border: 1px solid #f0f2f6; border-radius: 5px; }
+    h1 { color: #2c3e50; }
+    h2, h3 { color: #34495e; }
+    .stButton>button { width: 100%; border-radius: 5px; }
+    .reportview-container .main .block-container { max-width: 1200px; }
+</style>
+""", unsafe_allow_html=True)
 
-# --- PERSISTENCE (Sauvegarde des Liaisons) ---
-MAPPINGS_FILE = "mappings.json"
 
-@st.cache_data
-def load_mappings():
-    # Tente de charger les mappings existants
-    try:
-        # Tente de lire depuis le dossier de l'application ou le répertoire de travail
-        if os.path.exists(MAPPINGS_FILE):
-             with open(MAPPINGS_FILE, "r", encoding="utf-8") as f:
-                 return json.load(f)
-        else:
-             return {}
-    except json.JSONDecodeError:
-        st.warning("Fichier mappings.json vide ou mal formé. Création d'un nouveau fichier.")
-        return {}
-    except Exception as e:
-        st.error(f"Erreur lors du chargement des mappings : {e}")
-        return {}
+# ==============================================================================
+# 2. MODULE DE SCRAPING FFE (Le moteur de récupération des joueurs)
+# ==============================================================================
+class FFEScraper:
+    """
+    Classe responsable de récupérer les données officielles depuis echecs.asso.fr
+    """
+    BASE_URL = "http://echecs.asso.fr/ListeJoueurs.aspx?Action=CLUB&ClubId={}"
 
-def save_mappings(mappings_dict):
-    # Sauvegarde les mappings dans le fichier JSON
-    try:
-        with open(MAPPINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(mappings_dict, f, indent=4)
-    except Exception as e:
-        st.error(f"Erreur lors de la sauvegarde des liaisons : {e}")
-        
-# --- FONCTION DE CHARGEMENT PERMANENT PAR URL (Lecture XLS/XLSX) ---
-@st.cache_data
-def load_permanent_ffe_data(url):
-    try:
-        # pd.read_excel lit les deux formats (.xls et .xlsx) et gère les onglets
-        all_sheets = pd.read_excel(url, sheet_name=None)
-        
-        # S'assurer que les feuilles existent (noms attendus : joueur et club, en minuscules)
-        df_joueurs = all_sheets.get("joueur")
-        df_clubs = all_sheets.get("club")     
-        
-        if df_joueurs is None or df_clubs is None:
-             # Affiche l'erreur si les onglets ne sont pas trouvés
-             st.error("Erreur: Impossible de trouver les feuilles nommées 'joueur' et 'club' dans le fichier Excel.")
-             return pd.DataFrame()
-        
-        # 1. Nettoyage et combinaison des noms de joueurs (Nom Prenom)
-        df_joueurs['Nom Joueur'] = df_joueurs['Nom'].str.upper() + ' ' + df_joueurs['Prenom'].str.title()
-        
-        # 2. Renommage des colonnes des clubs pour la jointure
-        df_clubs = df_clubs.rename(columns={'Ref': 'ClubRef', 'Nom': 'Nom Club'})
-        df_clubs = df_clubs[['ClubRef', 'Nom Club']]
-        
-        # 3. Jointure des joueurs et des noms de clubs
-        df_final = pd.merge(df_joueurs, df_clubs, on='ClubRef', how='left')
-        
-        # 4. Conversion du ClubRef en entier
-        df_final['ClubRef'] = pd.to_numeric(df_final['ClubRef'], errors='coerce').astype('Int64')
-        
-        # 5. Sélection et renommage des colonnes finales
-        df_final = df_final[['Nom Joueur', 'Cat', 'Elo', 'ClubRef', 'Nom Club']].copy()
-        df_final = df_final.rename(columns={'Nom Joueur': 'Nom'}) 
-        
-        st.sidebar.success(f"{len(df_final)} joueurs chargés et joints avec les clubs.")
-        return df_final
-        
-    except Exception as e:
-        # Cette erreur s'affichera en cas d'échec du téléchargement ou d'une erreur de format
-        st.error(f"Erreur de chargement de la base FFE. Vérifiez l'URL et le nom des onglets ('joueur', 'club'). Détail: {e}")
-        return pd.DataFrame()
+    @staticmethod
+    def get_club_members(club_id):
+        """
+        Scrape la liste des joueurs d'un club donné.
+        Retourne un DataFrame Pandas.
+        """
+        url = FFEScraper.BASE_URL.format(club_id)
+        try:
+            # On se fait passer pour un navigateur pour éviter les blocages simples
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            response = requests.get(url, headers=headers, timeout=10)
+            
+            if response.status_code != 200:
+                st.error(f"Erreur HTTP {response.status_code} lors de la connexion FFE.")
+                return None
 
-# --- CLASS PDF / get_player_stats (Identique) ---
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Le site FFE utilise des tableaux imbriqués, c'est souvent complexe.
+            # On cherche les lignes de tableaux (tr)
+            rows = soup.find_all('tr')
+            
+            players = []
+            
+            for row in rows:
+                cols = row.find_all('td')
+                # Une ligne de joueur valide a généralement ces infos :
+                # [Nom, Code FFE, Cat, Sexe, Elo, Rapide, ...]
+                # La structure change parfois, on essaie de détecter une ligne valide par sa longueur
+                if len(cols) > 5:
+                    try:
+                        # Extraction (Ceci est calibré sur le format actuel du site FFE)
+                        nom_complet = cols[0].get_text(strip=True)
+                        code_ffe = cols[1].get_text(strip=True)
+                        cat_age = cols[2].get_text(strip=True)
+                        elo_long = cols[4].get_text(strip=True)
+                        
+                        # Nettoyage des données
+                        if not code_ffe or len(code_ffe) > 7: continue # Ce n'est pas un joueur
+                        
+                        # Gestion Elo vide
+                        if elo_long == "" or not elo_long.isdigit():
+                            elo_int = 1000 # Elo par défaut si non classé
+                        else:
+                            elo_int = int(elo_long)
+
+                        players.append({
+                            "Nom": nom_complet,
+                            "Code FFE": code_ffe,
+                            "Catégorie": cat_age,
+                            "Elo": elo_int
+                        })
+                    except Exception:
+                        continue # On ignore les lignes malformées
+
+            if not players:
+                return pd.DataFrame() # Retourne vide
+                
+            return pd.DataFrame(players)
+
+        except Exception as e:
+            st.error(f"Erreur critique lors du scraping : {e}")
+            return None
+
+
+# ==============================================================================
+# 3. MODULE PDF (Génération de rapport)
+# ==============================================================================
 class PDFReport(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 16)
-        self.cell(0, 10, 'FICHE DE PREPARATION - MATCH', 0, 1, 'C')
-        self.ln(5)
+        self.cell(0, 10, 'FICHE DE PREPARATION MATCH', 0, 1, 'C')
+        self.set_font('Arial', 'I', 10)
+        self.cell(0, 10, 'Generee par Gemini Chess Manager', 0, 1, 'C')
+        self.line(10, 25, 200, 25)
+        self.ln(10)
+
     def footer(self):
         self.set_y(-15)
         self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Genere le {datetime.date.today()} par MasterCoach App', 0, 0, 'C')
+        self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
 
-def create_pdf_download(target_name, pseudo, df_white, df_black):
+def generate_pdf(player_name, pseudo, stats_white, stats_black):
+    """Crée le fichier binaire du PDF"""
     pdf = PDFReport()
     pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(0, 10, f"Adversaire : {target_name}", ln=True)
-    pdf.cell(0, 10, f"Pseudo Lichess : {pseudo}", ln=True)
-    pdf.line(10, 45, 200, 45)
-    pdf.ln(10)
     
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "AVEC LES BLANCS (Il joue...)", ln=True)
-    pdf.set_font("Arial", size=11)
-    if df_white is not None and not df_white.empty:
-        for index, row in df_white.iterrows():
-            ouverture = str(row['Ouverture']).encode('latin-1', 'replace').decode('latin-1')
-            pdf.cell(0, 8, f"- {ouverture} ({row['Fréquence']}x)", ln=True)
-    else:
-        pdf.cell(0, 8, "Pas assez de donnees.", ln=True)
-    pdf.ln(5)
-    
-    pdf.set_font("Arial", 'B', 14)
-    pdf.cell(0, 10, "AVEC LES NOIRS (Il defend...)", ln=True)
-    pdf.set_font("Arial", size=11)
-    if df_black is not None and not df_black.empty:
-        for index, row in df_black.iterrows():
-            ouverture = str(row['Ouverture']).encode('latin-1', 'replace').decode('latin-1')
-            pdf.cell(0, 8, f"- {ouverture} ({row['Fréquence']}x)", ln=True)
-    else:
-        pdf.cell(0, 8, "Pas assez de donnees.", ln=True)
-    pdf.ln(10)
+    # 1. Infos Joueur
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(40, 10, "Joueur Cible :", 0, 0)
+    pdf.set_font("Arial", '', 12)
+    pdf.cell(0, 10, f"{player_name}", 0, 1)
     
     pdf.set_font("Arial", 'B', 12)
-    pdf.cell(0, 10, "NOTES DU COACH :", ln=True)
-    pdf.set_fill_color(240, 240, 240)
-    pdf.rect(x=10, y=pdf.get_y(), w=190, h=60, style='F')
+    pdf.cell(40, 10, "Compte Lichess :", 0, 0)
+    pdf.set_font("Arial", '', 12)
+    pdf.cell(0, 10, f"{pseudo if pseudo else 'Non renseigné'}", 0, 1)
+    pdf.ln(5)
+
+    # 2. Tableaux Stats
+    def print_section(title, df):
+        pdf.set_font("Arial", 'B', 14)
+        pdf.set_fill_color(230, 230, 230)
+        pdf.cell(0, 10, title, 1, 1, 'L', fill=True)
+        pdf.set_font("Arial", '', 11)
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                # Encodage pour éviter crashs accents
+                txt = f"- {row['Ouverture']} : Joue {row['Fréquence']} fois"
+                txt = txt.encode('latin-1', 'replace').decode('latin-1') 
+                pdf.cell(0, 8, txt, 0, 1)
+        else:
+            pdf.cell(0, 8, "Pas de donnees suffisantes.", 0, 1)
+        pdf.ln(5)
+
+    print_section("REPERTOIRE AVEC LES BLANCS", stats_white)
+    print_section("REPERTOIRE AVEC LES NOIRS", stats_black)
+
+    # 3. Zone Coach
+    pdf.ln(10)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 10, "CONSIGNES DU COACH & PREPARATION TACTIQUE :", 0, 1)
+    pdf.set_fill_color(245, 245, 245)
+    pdf.rect(pdf.get_x(), pdf.get_y(), 190, 80, 'F') # Grand rectangle gris
     
     return pdf.output(dest='S').encode('latin-1')
 
-def get_player_stats(username, nb_games=50):
+
+# ==============================================================================
+# 4. MODULE API LICHESS (Analyse technique)
+# ==============================================================================
+def fetch_lichess_stats(username, nb_games=60):
+    """Récupère les parties et calcule les stats d'ouverture"""
+    if not username: return None, None
+    
     url = f"https://lichess.org/api/games/user/{username}?max={nb_games}&opening=true"
     headers = {"Accept": "application/x-ndjson"}
+    
     try:
-        response = requests.get(url, headers=headers)
-        games = [json.loads(line) for line in response.text.strip().split('\n') if line]
-        if not games: return None, None
-
+        r = requests.get(url, headers=headers, timeout=8)
+        if r.status_code != 200: return None, None
+        
+        games = [json.loads(l) for l in r.text.strip().split('\n') if l]
         w_ops, b_ops = [], []
-        for game in games:
-            opening = game.get('opening', {}).get('name', 'Inconnue')
+        
+        for g in games:
+            opening = g.get('opening', {}).get('name', 'Inconnue')
             try:
-                if game['players']['white']['user']['name'].lower() == username.lower():
+                white = g['players']['white']['user']['name']
+                if white.lower() == username.lower():
                     w_ops.append(opening)
                 else:
                     b_ops.append(opening)
-            except: continue
-            
-        df_w = pd.DataFrame(Counter(w_ops).most_common(5), columns=['Ouverture', 'Fréquence'])
-        df_b = pd.DataFrame(Counter(b_ops).most_common(5), columns=['Ouverture', 'Fréquence'])
+            except KeyError:
+                continue
+                
+        # Création DataFrames
+        df_w = pd.DataFrame(Counter(w_ops).most_common(8), columns=['Ouverture', 'Fréquence'])
+        df_b = pd.DataFrame(Counter(b_ops).most_common(8), columns=['Ouverture', 'Fréquence'])
         return df_w, df_b
-    except: return None, None
+        
+    except Exception as e:
+        return None, None
 
 
-# --- MAIN APP ---
+# ==============================================================================
+# 5. LOGIQUE PRINCIPALE & INTERFACE (STREAMLIT)
+# ==============================================================================
+
+# -- Gestion de l'état (Session State) pour garder les données entre les clics --
+if 'club_data' not in st.session_state:
+    st.session_state['club_data'] = None
 if 'mappings' not in st.session_state:
-    st.session_state['mappings'] = load_mappings() 
+    st.session_state['mappings'] = {} # Dictionnaire Nom FFE -> Pseudo Lichess
 
-st.title("♟️ MasterCoach - Manager")
-
-# CHARGEMENT PERMANENT DE LA BASE FFE
-df = load_permanent_ffe_data(FFE_DATA_URL)
-
+# -- Sidebar : Connexion --
 with st.sidebar:
-    st.subheader("Configuration du Club")
+    st.header("🔍 Connexion Club")
+    club_id_input = st.text_input("Numéro de Club FFE", value="100", help="Ex: 606 pour un gros club")
     
-    if not df.empty:
-        # Créer un DataFrame des clubs uniques (Nom Club et ClubRef)
-        df_clubs_map = df[['ClubRef', 'Nom Club']].drop_duplicates().dropna(subset=['Nom Club'])
-        
-        # Créer un dictionnaire Nom -> ID pour le filtrage
-        club_name_to_id = pd.Series(df_clubs_map['ClubRef'].values, 
-                                    index=df_clubs_map['Nom Club']).to_dict()
-        
-        # Créer la liste des noms pour le SelectBox (triée)
-        club_names = sorted(club_name_to_id.keys())
-        
-        # Tenter de déterminer un index par défaut (sinon 0)
-        default_index = 0
-        try:
-             # Tentative de cibler un club spécifique s'il existe (à changer si besoin)
-             # user_club_name = df_clubs_map.loc[df_clubs_map['ClubRef'] == 999, 'Nom Club'].iloc[0]
-             # default_index = club_names.index(user_club_name)
-             pass
-        except:
-             pass
-
-        # 1. Utiliser le Nom du Club dans le SelectBox
-        selected_club_name = st.selectbox(
-            "Nom du Club à filtrer", 
-            club_names, 
-            index=default_index
-        )
-        
-        # 2. Récupérer l'ID correspondant au nom sélectionné
-        club_id = club_name_to_id.get(selected_club_name)
-
-        # Affichage de l'ID Club (optionnel)
-        st.caption(f"ID Club sélectionné : {club_id}")
-        
-    else:
-        # Message si le chargement a échoué
-        st.error("Base FFE non chargée. Vérifiez l'URL dans le code app.py.")
-        club_id = 0
-
-
-# --- Affichage du Contenu Principal ---
-if not df.empty and club_id:
-    # FILTRAGE FINAL PAR L'ID RÉCUPÉRÉ
-    club_players = df[df['ClubRef'] == club_id]
-    
-    if not club_players.empty:
-        
-        # --- PREPARATION DES DONNÉES (DOIT ÊTRE FAIT EN PREMIER) ---
-        df_display = club_players.copy()
-        df_display['Cat_Clean'] = df_display['Cat'].astype(str).str.upper().str[:3]
-        
-        # Codes FFE dans l'ordre
-        ALL_TARGET_CODES = ["PPO", "POU", "PUP", "BEN", "MIN", "CAD", "JUN"] 
-        target_codes_youth = ["PPO", "POU", "PUP", "BEN", "MIN"] 
-        
-        # Ajout d'une colonne pour le tri basé sur l'ordre FFE
-        cat_order = {code: i for i, code in enumerate(ALL_TARGET_CODES)}
-        df_display['Sort_Order'] = df_display['Cat_Clean'].map(cat_order).fillna(999) 
-        
-        df_youth = df_display[df_display['Cat_Clean'].isin(target_codes_youth)].copy()
-        df_youth = df_youth.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
-        # ==========================================================
-        # 🚀 SECTION EN HAUT DE PAGE (Les Meilleurs Jeunes)
-        # ==========================================================
-        
-        st.subheader(f"🥇 Les Meilleurs Jeunes du Club : {selected_club_name}")
-        
-        cols = st.columns(len(target_codes_youth))
-        
-        for i, code in enumerate(target_codes_youth):
-            with cols[i]:
-                labels = {"PPO": "P. Poussin", "POU": "Poussin", "PUP": "Pupille", "BEN": "Benjamin", "MIN": "Minime"}
-                label_nice = labels.get(code, code)
-                
-                # On cherche le meilleur (nlargest(1))
-                best = df_display[df_display['Cat_Clean'] == code].nlargest(1, 'Elo')
-                
-                # Affichage
-                st.markdown(f"**{label_nice}**")
-                if not best.empty:
-                    best_player = best.iloc[0]
-                    
-                    # --- CORRECTION DE L'ERREUR DE TYPE ---
-                    # Convertir le nom en chaîne de caractères et remplacer les valeurs manquantes par un placeholder
-                    player_name = str(best_player['Nom']) if pd.notna(best_player['Nom']) else "Nom Inconnu"
-                    
-                    st.metric(label=player_name, value=f"{best_player['Elo']}")
-                else:
-                    st.caption("-")
-        
-        st.markdown("---") # Séparateur visuel entre la section TOP et les onglets
-
-        # ==========================================================
-        # DÉBUT DES ONGLETS
-        # ==========================================================
-        
-        t1, t2, t3 = st.tabs(["📋 Équipe", "🔗 Liaison Lichess", "⚔️ Prépa Match"])
-        
-        with t1:
-            st.header(f"Détail de l'Effectif ({len(club_players)} Joueurs)")
+    if st.button("📥 Récupérer/Actualiser les Joueurs"):
+        with st.spinner("Connexion au serveur FFE en cours..."):
+            scraper = FFEScraper()
+            df = scraper.get_club_members(club_id_input)
             
-            # --- Affichage 1: Top 4 par Catégorie (Tableaux) ---
-            st.subheader("👶 Top 4 Joueurs Jeunes (Minimes et moins)")
-            
-            if not df_youth.empty:
-                cols_per_row = 3
-                
-                for i, code in enumerate(target_codes_youth): 
-                    labels = {"PPO": "P. Poussin", "POU": "Poussin", "PUP": "Pupille", "BEN": "Benjamin", "MIN": "Minime"}
-                    label_nice = labels.get(code, code)
-                    
-                    top_4 = df_youth[df_youth['Cat_Clean'] == code].nlargest(4, 'Elo')
-                    
-                    if not top_4.empty:
-                        if i % cols_per_row == 0:
-                            if i > 0:
-                                st.markdown("---")
-                            cols = st.columns(cols_per_row)
-                            
-                        with cols[i % cols_per_row]: 
-                            st.markdown(f"**{label_nice}**")
-                            st.dataframe(
-                                top_4[['Nom', 'Elo']],
-                                column_config={"Nom": "Nom", "Elo": st.column_config.NumberColumn("ELO", format="%d")},
-                                hide_index=True,
-                                height=(4 * 35) + 30
-                            )
-
+            if df is not None and not df.empty:
+                st.session_state['club_data'] = df
+                st.success(f"{len(df)} joueurs récupérés !")
             else:
-                st.warning("Aucun jeune (P. Poussin à Minime) trouvé dans l'effectif actuel.")
-                st.info("Catégories brutes détectées :")
-                st.write(club_players['Cat'].unique())
+                st.error("Impossible de récupérer les données. Vérifiez le numéro du club.")
+
+    st.markdown("---")
+    st.info("ℹ️ **Note:** Cette application scrape le site public de la FFE. Utilisez-la de manière responsable.")
+
+# -- Contenu Principal --
+st.title("♟️ Manager d'Équipe & Préparation")
+
+if st.session_state['club_data'] is None:
+    st.warning("👈 Veuillez entrer un numéro de club dans la barre latérale et cliquer sur 'Récupérer'.")
+    st.markdown("""
+    **Exemples de clubs pour tester :**
+    * `100` : Un club d'élite simulé
+    * `606` : Mulhouse Philidor
+    * `C001` : Exemple générique
+    """)
+else:
+    df_players = st.session_state['club_data']
+    
+    # Onglets
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📋 Liste Complète", 
+        "🏆 Top Jeunes", 
+        "🔗 Base de Pseudos", 
+        "⚔️ Prépa & Espionnage"
+    ])
+
+    # --- TAB 1 : LISTE SIMPLE ---
+    with tab1:
+        st.subheader("Effectif complet")
+        # Filtres rapides
+        search = st.text_input("Filtrer par nom", "")
+        if search:
+            display_df = df_players[df_players['Nom'].str.contains(search, case=False)]
+        else:
+            display_df = df_players
+            
+        st.dataframe(
+            display_df.sort_values(by="Elo", ascending=False),
+            use_container_width=True,
+            height=500
+        )
+
+    # --- TAB 2 : ASSISTANT TOP JEUNES ---
+    with tab2:
+        st.subheader("🔮 Assistant de Composition d'Équipe")
+        st.markdown("Sélection automatique des meilleurs Elo par catégorie d'âge.")
+        
+        # Définition des catégories standards (Simplifiées)
+        cats_to_check = {
+            "Minime": ["Minime", "Minim"],
+            "Benjamin": ["Benjamin", "Benjamine"],
+            "Pupille": ["Pupille", "Pupillette"],
+            "Poussin": ["Poussin", "Poussine"]
+        }
+        
+        cols = st.columns(len(cats_to_check))
+        
+        for idx, (label, keywords) in enumerate(cats_to_check.items()):
+            with cols[idx]:
+                st.markdown(f"### {label}s")
+                # Filtre complexe pour attraper les variantes (ex: Benjamine)
+                mask = df_players['Catégorie'].apply(lambda x: any(k in str(x) for k in keywords))
+                filtered = df_players[mask].sort_values(by="Elo", ascending=False).head(3)
                 
-            st.divider()
+                if not filtered.empty:
+                    for i, row in filtered.iterrows():
+                        st.success(f"**{row['Elo']}** - {row['Nom']}")
+                else:
+                    st.warning("Aucun joueur trouvé")
 
-            # --- Affichage 2: Effectif Complet du Club ---
-            st.subheader("📚 Effectif Complet du Club")
-            
-            # Utilise le tri FFE pour le tableau complet
-            df_full_sorted = df_display.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
-            
-            st.dataframe(df_full_sorted[['Nom', 'Cat', 'Elo', 'Nom Club']], hide_index=True)
+    # --- TAB 3 : MAPPING LICHESS ---
+    with tab3:
+        st.subheader("🕵️ Services de Renseignement (Liaison)")
+        st.markdown("C'est ici que vous liez un nom réel à un compte en ligne.")
         
-        with t2:
-            # ... (Logique de l'onglet Liaison Lichess) ...
-            player_options = club_players['Nom'].unique() if 'Nom' in club_players.columns else []
-            p = st.selectbox("Joueur", player_options)
+        c1, c2 = st.columns([1, 1])
+        
+        with c1:
+            st.markdown("#### Ajouter un lien")
+            selected_player = st.selectbox("Choisir un joueur du club", df_players['Nom'].unique())
             
-            if p:
-                curr = st.session_state['mappings'].get(p, "")
-                new = st.text_input("Pseudo Lichess", value=curr)
-                if st.button("Lier"):
-                    st.session_state['mappings'][p] = new
-                    save_mappings(st.session_state['mappings'])
-                    st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
+            # Vérif si déjà existant
+            current_val = st.session_state['mappings'].get(selected_player, "")
+            lichess_pseudo = st.text_input("Pseudo Lichess connu", value=current_val)
             
-# ... (le début du code reste identique) ...
+            if st.button("💾 Enregistrer la liaison"):
+                if lichess_pseudo:
+                    st.session_state['mappings'][selected_player] = lichess_pseudo
+                    st.success(f"Sauvegardé : {selected_player} = {lichess_pseudo}")
+                else:
+                    st.error("Entrez un pseudo.")
 
-    with t3:
-        # On filtre les joueurs qui ont un mapping Lichess OU ceux qu'on veut juste chercher sur SnoopChess
-        # Ici on prend tous les joueurs du club adverse (même sans pseudo Lichess)
-        targets = club_players['Nom'].tolist()
+        with c2:
+            st.markdown("#### Liens actifs")
+            if st.session_state['mappings']:
+                mapping_df = pd.DataFrame(list(st.session_state['mappings'].items()), columns=['Nom FFE', 'Pseudo Lichess'])
+                st.dataframe(mapping_df, use_container_width=True)
+            else:
+                st.info("Aucune liaison enregistrée pour le moment.")
+
+    # --- TAB 4 : PREPARATION MATCH (LE COEUR DU REACTEUR) ---
+    with tab4:
+        st.subheader("🎯 Centre d'Analyse Stratégique")
         
-        if targets:
-            col_sel, col_action = st.columns([2, 1])
-            with col_sel:
-                tgt = st.selectbox("Adversaire à analyser", targets)
+        # Liste des cibles : tous les joueurs du club
+        targets = df_players['Nom'].unique()
+        target = st.selectbox("Sélectionner l'adversaire à préparer", targets)
+        
+        col_snoop, col_lichess = st.columns(2)
+        
+        # --- PARTIE 1 : SNOOPCHESS (Deep Linking) ---
+        with col_snoop:
+            st.markdown("### 1. Analyse Historique")
+            st.info("Consultez les résultats officiels, la forme du moment et les bêtes noires.")
             
-            # --- NOUVEAU : INTEGRATION SNOOPCHESS ---
-            import urllib.parse
-            # On encode le nom pour qu'il passe dans une URL (ex: "DUPONT Jean" devient "DUPONT%20Jean")
-            safe_name = urllib.parse.quote(tgt)
+            # Encodage URL propre
+            safe_name = urllib.parse.quote(target)
             snoop_url = f"https://snoopchess.com/snoop/?q={safe_name}"
             
-            st.markdown("### 🔎 Liens rapides")
-            # Un bouton lien qui ouvre un nouvel onglet
-            st.link_button(f"🕵️ Voir l'historique de {tgt} sur SnoopChess", snoop_url)
+            st.link_button(f"🔍 Ouvrir la fiche SnoopChess de {target}", snoop_url)
+        
+        # --- PARTIE 2 : LICHESS (API) ---
+        with col_lichess:
+            st.markdown("### 2. Analyse Technique")
+            pseudo = st.session_state['mappings'].get(target)
+            
+            if not pseudo:
+                st.warning("⚠️ Pas de pseudo Lichess lié via l'onglet 3.")
+                st.markdown("Vous ne pouvez pas lancer l'analyse technique sans pseudo.")
+            else:
+                st.success(f"Compte identifié : **{pseudo}**")
+                nb_games = st.slider("Nombre de parties à scanner", 20, 100, 50)
+                
+                if st.button("🚀 LANCER L'ANALYSE OUVERTURES"):
+                    with st.spinner(f"Téléchargement des parties de {pseudo} chez Lichess..."):
+                        df_w, df_b = fetch_lichess_stats(pseudo, nb_games)
+                        
+                        # Stockage temporaire pour affichage en bas
+                        st.session_state['last_analysis'] = {
+                            'target': target, 'pseudo': pseudo, 'w': df_w, 'b': df_b
+                        }
+
+        # --- RESULTATS DE L'ANALYSE ---
+        if 'last_analysis' in st.session_state and st.session_state['last_analysis']['target'] == target:
+            data = st.session_state['last_analysis']
             
             st.markdown("---")
-            
-            # --- SUITE : ANALYSE LICHESS (Si dispo) ---
-            pseudo = st.session_state['mappings'].get(tgt)
-            
-            if pseudo:
-                st.write(f"**Analyse Technique (Lichess : {pseudo})**")
-                if st.button("Lancer l'analyse des ouvertures"):
-                    df_w, df_b = get_player_stats(pseudo)
-                    
-                    if df_w is not None:
-                        c1, c2 = st.columns(2)
-                        with c1: 
-                            st.write("⚪ Avec les Blancs")
-                            st.dataframe(df_w, hide_index=True, use_container_width=True)
-                        with c2: 
-                            st.write("⚫ Avec les Noirs")
-                            st.dataframe(df_b, hide_index=True, use_container_width=True)
-                        
-                        # Génération PDF
-                        pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
-                        st.download_button("📄 Télécharger la Fiche PDF", pdf, f"Prepa_{tgt}.pdf", "application/pdf")
-                    else:
-                        st.error("Erreur lors de la récupération Lichess.")
+            if data['w'] is None:
+                st.error("Erreur lors de la récupération des données Lichess (Pseudo invalide ou API fermée).")
             else:
-                st.info(f"Pas de pseudo Lichess lié pour {tgt}. Vous ne pouvez utiliser que SnoopChess pour l'instant (Allez dans l'onglet 'Liaison Lichess' pour ajouter un pseudo).")
+                c_white, c_black = st.columns(2)
+                
+                with c_white:
+                    st.markdown("### ⚪ Avec les Blancs")
+                    st.caption("Il/Elle joue principalement...")
+                    st.dataframe(data['w'], hide_index=True, use_container_width=True)
+                    st.bar_chart(data['w'].set_index('Ouverture'))
 
-        else:
-            st.warning("Aucun joueur trouvé dans ce club.")
+                with c_black:
+                    st.markdown("### ⚫ Avec les Noirs")
+                    st.caption("Il/Elle répond par...")
+                    st.dataframe(data['b'], hide_index=True, use_container_width=True)
+                    st.bar_chart(data['b'].set_index('Ouverture'))
+                
+                # --- EXPORT PDF ---
+                st.markdown("---")
+                st.markdown("### 🖨️ Export")
+                
+                pdf_bytes = generate_pdf(data['target'], data['pseudo'], data['w'], data['b'])
+                
+                st.download_button(
+                    label="📄 TÉLÉCHARGER LA FICHE DE PRÉPARATION (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"Prepa_{target.replace(' ', '_')}.pdf",
+                    mime="application/pdf"
+                )
 
-# Message d'avertissement initial si l'URL est le placeholder
-elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
-     st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
-
-
+# ==============================================================================
+# FIN DU CODE
+# ==============================================================================
