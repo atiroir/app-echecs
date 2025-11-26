@@ -399,7 +399,8 @@ with t3:
                 st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur avant de lancer l'analyse.")
 
 # Message d'avertissement initial si l'URL est le placeholder
-    else: 
+else: 
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
 
 
