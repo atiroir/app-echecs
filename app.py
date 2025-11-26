@@ -8,61 +8,7 @@ from fpdf import FPDF
 import datetime
 import io
 import os
-from bs4 import BeautifulSoup
-# ... (le reste des imports) ...
-
-def get_snoopchess_stats(username):
-    # Remplacez chess.com par lichess pour le snoop
-    url = f"https://snoopchess.com/snoop/lichess/{username}"
-    
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code != 200:
-            return None, None
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        # Le scraping est très spécifique à la structure actuelle du site.
-        # On cible les cartes d'ouvertures (Opening Cards)
-        
-        # Extraction pour les Blancs
-        white_container = soup.find('div', id='white')
-        df_w = extract_openings_from_html(white_container)
-        
-        # Extraction pour les Noirs
-        black_container = soup.find('div', id='black')
-        df_b = extract_openings_from_html(black_container)
-
-        return df_w, df_b
-        
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Impossible de contacter SnoopChess ou Timeout. Erreur: {e}")
-        return None, None
-
-def extract_openings_from_html(container):
-    if not container:
-        return pd.DataFrame({'Ouverture': [], 'Fréquence': []})
-
-    # Trouver toutes les lignes de répertoires
-    rows = container.find_all('div', class_='text-sm') 
-    
-    data = []
-    for row in rows[:5]: # On ne prend que le top 5
-        # Le nom est souvent dans le premier span
-        opening_name = row.find('span', class_='text-gray-500')
-        if not opening_name: continue
-        
-        # La fréquence est dans l'élément parent qui contient le nom
-        # On va tenter d'extraire la fréquence brute (le pourcentage)
-        frequency_text = row.find('div', class_='w-1/4').text.strip()
-        
-        data.append({
-            'Ouverture': opening_name.text.strip(),
-            'Fréquence': frequency_text
-        })
-    
-    return pd.DataFrame(data)
-
+from bs4 import BeautifulSoup # Ajout nécessaire pour le scraping SnoopChess
 
 # --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN OVH !) ---
 # Exemple d'URL : http://basilevinet.com/data/BaseFFE.xls
@@ -135,7 +81,7 @@ def load_permanent_ffe_data(url):
         st.error(f"Erreur de chargement de la base FFE. Vérifiez l'URL et le nom des onglets ('joueur', 'club'). Détail: {e}")
         return pd.DataFrame()
 
-# --- CLASS PDF / get_player_stats ---
+# --- FONCTIONS D'ANALYSE (LICHESS et SNOOPCHESS) ---
 class PDFReport(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 16)
@@ -160,8 +106,10 @@ def create_pdf_download(target_name, pseudo, df_white, df_black):
     pdf.set_font("Arial", size=11)
     if df_white is not None and not df_white.empty:
         for index, row in df_white.iterrows():
+            # Ajout d'une vérification pour l'encodage et les types
             ouverture = str(row['Ouverture']).encode('latin-1', 'replace').decode('latin-1')
-            pdf.cell(0, 8, f"- {ouverture} ({row['Fréquence']}x)", ln=True)
+            frequence = str(row['Fréquence']).encode('latin-1', 'replace').decode('latin-1')
+            pdf.cell(0, 8, f"- {ouverture} ({frequence})", ln=True)
     else:
         pdf.cell(0, 8, "Pas assez de donnees.", ln=True)
     pdf.ln(5)
@@ -172,7 +120,8 @@ def create_pdf_download(target_name, pseudo, df_white, df_black):
     if df_black is not None and not df_black.empty:
         for index, row in df_black.iterrows():
             ouverture = str(row['Ouverture']).encode('latin-1', 'replace').decode('latin-1')
-            pdf.cell(0, 8, f"- {ouverture} ({row['Fréquence']}x)", ln=True)
+            frequence = str(row['Fréquence']).encode('latin-1', 'replace').decode('latin-1')
+            pdf.cell(0, 8, f"- {ouverture} ({frequence})", ln=True)
     else:
         pdf.cell(0, 8, "Pas assez de donnees.", ln=True)
     pdf.ln(10)
@@ -185,10 +134,11 @@ def create_pdf_download(target_name, pseudo, df_white, df_black):
     return pdf.output(dest='S').encode('latin-1')
 
 def get_player_stats(username, nb_games=50):
+    # Analyse Lichess via API (fiable)
     url = f"https://lichess.org/api/games/user/{username}?max={nb_games}&opening=true"
     headers = {"Accept": "application/x-ndjson"}
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         games = [json.loads(line) for line in response.text.strip().split('\n') if line]
         if not games: return None, None
 
@@ -206,6 +156,58 @@ def get_player_stats(username, nb_games=50):
         df_b = pd.DataFrame(Counter(b_ops).most_common(5), columns=['Ouverture', 'Fréquence'])
         return df_w, df_b
     except: return None, None
+
+def extract_openings_from_html(container):
+    if not container:
+        return pd.DataFrame({'Ouverture': [], 'Fréquence': []})
+
+    data = []
+    # Snoopchess utilise souvent des divs spécifiques pour structurer les ouvertures
+    # Cette sélection est basée sur l'observation de la structure HTML au moment de l'écriture
+    rows = container.find_all('div', class_='text-sm') 
+    
+    for row in rows[:5]: 
+        # Tente de trouver le nom de l'ouverture (souvent dans un span)
+        opening_name = row.find('span', class_='text-gray-500')
+        
+        # Tente d'extraire la fréquence (le pourcentage) dans l'élément voisin ou enfant
+        frequency_div = row.find('div', class_='w-1/4')
+        
+        if opening_name and frequency_div:
+            data.append({
+                'Ouverture': opening_name.text.strip(),
+                'Fréquence': frequency_div.text.strip()
+            })
+    
+    return pd.DataFrame(data)
+
+def get_snoopchess_stats(username):
+    # Analyse SnoopChess via Web Scraping (fragile)
+    url = f"https://snoopchess.com/snoop/lichess/{username}"
+    
+    try:
+        # User-Agent pour simuler un navigateur réel (réduit le risque de blocage)
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            st.warning(f"SnoopChess a retourné le statut {response.status_code}. Les données n'ont pas pu être lues.")
+            return None, None
+        
+        soup = BeautifulSoup(response.content, 'html.parser')
+        
+        # Le scraping est très spécifique à la structure actuelle du site.
+        white_container = soup.find('div', id='white')
+        df_w = extract_openings_from_html(white_container)
+        
+        black_container = soup.find('div', id='black')
+        df_b = extract_openings_from_html(black_container)
+
+        return df_w, df_b
+        
+    except requests.exceptions.RequestException as e:
+        st.warning(f"Impossible de contacter SnoopChess (Timeout/Connexion). Détail: {e}")
+        return None, None
 
 
 # --- MAIN APP ---
@@ -242,7 +244,7 @@ with st.sidebar:
         st.caption(f"ID Club sélectionné : {club_id}")
         
     else:
-        st.error("Base FFE non chargée. Vérifiez l'URL dans le code app.py.")
+        st.error("Base FFE non chargée.")
         club_id = 0
 
 
@@ -284,7 +286,6 @@ if not df.empty and club_id:
                 st.markdown(f"**{label_nice}**")
                 if not best.empty:
                     best_player = best.iloc[0]
-                    # Correction pour éviter TypeError si le Nom est NaN/None
                     player_name = str(best_player['Nom']) if pd.notna(best_player['Nom']) else "Nom Inconnu"
                     
                     st.metric(label=player_name, value=f"{best_player['Elo']}")
@@ -339,12 +340,12 @@ if not df.empty and club_id:
             # --- Affichage 2: Effectif Complet du Club ---
             st.subheader("📚 Effectif Complet du Club")
             
-            # Utilise le tri FFE pour le tableau complet
             df_full_sorted = df_display.sort_values(by=['Sort_Order', 'Elo'], ascending=[True, False])
             
             st.dataframe(df_full_sorted[['Nom', 'Cat', 'Elo', 'Nom Club']], hide_index=True)
         
         with t2:
+            st.header("🔗 Liaison Lichess")
             player_options = club_players['Nom'].unique() if 'Nom' in club_players.columns else []
             p = st.selectbox("Joueur", player_options)
             
@@ -356,7 +357,7 @@ if not df.empty and club_id:
                     save_mappings(st.session_state['mappings'])
                     st.success(f"Liaison sauvegardée et enregistrée pour {p}: {new}")
             
-with t3:
+        with t3:
             st.header("⚔️ Préparation de Match")
             targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
             
@@ -378,30 +379,26 @@ with t3:
                         df_w, df_b = get_snoopchess_stats(pseudo)
                         
                     
-                    if df_w is not None:
+                    if df_w is not None and not df_w.empty:
                         c1, c2 = st.columns(2)
                         with c1: 
                             st.write("Blancs"); st.dataframe(df_w, hide_index=True)
                         with c2: 
                             st.write("Noirs"); st.dataframe(df_b, hide_index=True)
                         
-                        # Création du PDF (utilise les données actuelles de l'analyse)
                         pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
                         st.download_button("📄 Télécharger PDF de Prépa", pdf, "prepa_match.pdf", "application/pdf")
                     else:
-                        st.error("Impossible de récupérer les données pour l'analyse sélectionnée.")
+                        st.error("Impossible de récupérer ou de traiter les données pour l'analyse sélectionnée.")
                         
-                # Lien direct (toujours utile)
                 st.markdown(f"---")
                 st.markdown(f"**Lien direct SnoopChess :** [Consulter la page de {pseudo}](https://snoopchess.com/snoop/lichess/{pseudo})")
 
             else:
                 st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur avant de lancer l'analyse.")
-
-# ... (Logique principale de l'application)
     else:
         st.error(f"Aucun joueur trouvé pour le club sélectionné.")
 
 # Message d'avertissement initial si l'URL est le placeholder
-else: # <-- REMPLACEZ elif PAR else
+else: 
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
