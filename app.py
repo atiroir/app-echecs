@@ -398,7 +398,10 @@ with t3:
             else:
                 st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur avant de lancer l'analyse.")
 
-# Message d'avertissement initial si l'URL est le placeholder
-elif FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
-     st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+# ... (Logique principale de l'application)
+    else:
+        st.error(f"Aucun joueur trouvé pour le club sélectionné.")
 
+# Message d'avertissement initial si l'URL est le placeholder
+else: # <-- REMPLACEZ elif PAR else
+     st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
