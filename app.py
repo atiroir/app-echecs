@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 # --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN OVH !) ---
 # Exemple d'URL : http://basilevinet.com/data/BaseFFE.xls
-FFE_DATA_URL = "VOTRE_URL_STABLE_OVH_ICI" 
+FFE_DATA_URL = "http://basilevinet.com/data/BaseFFE.xls" 
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="♟️ MasterCoach", layout="wide", page_icon="♟️")
@@ -391,3 +391,4 @@ if not df.empty and club_id:
 # Message d'avertissement si la base de données n'est pas chargée OU si l'URL est le placeholder
 if df.empty and FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
