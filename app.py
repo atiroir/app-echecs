@@ -10,8 +10,7 @@ import io
 import os
 from bs4 import BeautifulSoup 
 
-# --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN OVH !) ---
-# Exemple d'URL : http://basilevinet.com/data/BaseFFE.xls
+# --- URL DE LA BASE FFE http://basilevinet.com/data/BaseFFE.xls  (REMPLACEZ PAR VOTRE LIEN OVH !) ---
 FFE_DATA_URL = "http://basilevinet.com/data/BaseFFE.xls" 
 
 # --- CONFIGURATION ---
@@ -22,7 +21,6 @@ MAPPINGS_FILE = "mappings.json"
 
 @st.cache_data
 def load_mappings():
-    # Tente de charger les mappings existants
     try:
         if os.path.exists(MAPPINGS_FILE):
              with open(MAPPINGS_FILE, "r", encoding="utf-8") as f:
@@ -37,7 +35,6 @@ def load_mappings():
         return {}
 
 def save_mappings(mappings_dict):
-    # Sauvegarde les mappings dans le fichier JSON
     try:
         with open(MAPPINGS_FILE, "w", encoding="utf-8") as f:
             json.dump(mappings_dict, f, indent=4)
@@ -57,20 +54,15 @@ def load_permanent_ffe_data(url):
              st.error("Erreur: Impossible de trouver les feuilles nommées 'joueur' et 'club' dans le fichier Excel.")
              return pd.DataFrame()
         
-        # 1. Nettoyage et combinaison des noms de joueurs (Nom Prenom)
         df_joueurs['Nom Joueur'] = df_joueurs['Nom'].str.upper() + ' ' + df_joueurs['Prenom'].str.title()
         
-        # 2. Renommage des colonnes des clubs pour la jointure
         df_clubs = df_clubs.rename(columns={'Ref': 'ClubRef', 'Nom': 'Nom Club'})
         df_clubs = df_clubs[['ClubRef', 'Nom Club']]
         
-        # 3. Jointure des joueurs et des noms de clubs
         df_final = pd.merge(df_joueurs, df_clubs, on='ClubRef', how='left')
         
-        # 4. Conversion du ClubRef en entier
         df_final['ClubRef'] = pd.to_numeric(df_final['ClubRef'], errors='coerce').astype('Int64')
         
-        # 5. Sélection et renommage des colonnes finales
         df_final = df_final[['Nom Joueur', 'Cat', 'Elo', 'ClubRef', 'Nom Club']].copy()
         df_final = df_final.rename(columns={'Nom Joueur': 'Nom'}) 
         
@@ -157,27 +149,37 @@ def get_player_stats(username, nb_games=50):
     except: return None, None
 
 def extract_openings_from_html(container):
+    """
+    Tente d'extraire le Top 5 des ouvertures et leurs fréquences de SnoopChess.
+    (Logique de Scraping)
+    """
     if not container:
         return pd.DataFrame({'Ouverture': [], 'Fréquence': []})
 
     data = []
-    # Ciblage des éléments basés sur la structure HTML de SnoopChess (Peut être fragile)
-    rows = container.find_all('div', class_='text-sm') 
+    
+    rows = container.find_all('div', class_=lambda c: c and 'flex justify-between' in c) 
     
     for row in rows[:5]: 
-        opening_name = row.find('span', class_='text-gray-500')
-        frequency_div = row.find('div', class_='w-1/4')
+        opening_name_element = row.find('span', class_='text-gray-500') 
+        frequency_element = row.find('div', class_='w-1/4') 
         
-        if opening_name and frequency_div:
-            data.append({
-                'Ouverture': opening_name.text.strip(),
-                'Fréquence': frequency_div.text.strip()
-            })
+        if opening_name_element and frequency_element:
+            name = opening_name_element.text.strip()
+            freq = frequency_element.text.strip()
+            
+            if name and "Ouverture" not in name and freq and '%' in freq:
+                data.append({
+                    'Ouverture': name,
+                    'Fréquence': freq
+                })
     
     return pd.DataFrame(data)
 
 def get_snoopchess_stats(username):
-    # Analyse SnoopChess via Web Scraping (fragile)
+    """
+    Analyse SnoopChess via Web Scraping (Attention : fonction fragile !)
+    """
     url = f"https://snoopchess.com/snoop/lichess/{username}"
     
     try:
@@ -215,7 +217,6 @@ df = load_permanent_ffe_data(FFE_DATA_URL)
 with st.sidebar:
     st.subheader("Configuration du Club")
     
-    # Affichage du sélecteur de club UNIQUEMENT si la base est chargée
     if not df.empty:
         df_clubs_map = df[['ClubRef', 'Nom Club']].drop_duplicates().dropna(subset=['Nom Club'])
         club_name_to_id = pd.Series(df_clubs_map['ClubRef'].values, 
@@ -353,7 +354,7 @@ if not df.empty and club_id:
                 tgt = st.selectbox("Cible (Joueur de votre club)", targets)
                 pseudo = st.session_state['mappings'][tgt]
                 
-                # --- Lien direct vers SnoopChess ---
+                # Lien direct vers SnoopChess
                 st.markdown(f"**Analyse Externe :** [Consulter la page de **{pseudo}** sur SnoopChess](https://snoopchess.com/snoop/lichess/{pseudo})")
                 st.markdown("---")
                 
@@ -388,7 +389,6 @@ if not df.empty and club_id:
     else:
         st.error(f"Aucun joueur trouvé pour le club sélectionné.")
 
-# Message d'avertissement si la base de données n'est pas chargée OU si l'URL est le placeholder
-if df.empty and FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
+# La condition finale est simplifiée et sécurisée (plus de risque de SyntaxError)
+if FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
-
