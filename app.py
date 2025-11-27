@@ -8,9 +8,10 @@ from fpdf import FPDF
 import datetime
 import io
 import os
-from bs4 import BeautifulSoup 
+# from bs4 import BeautifulSoup # Suppression de BeautifulSoup
 
-# --- URL DE LA BASE FFE http://basilevinet.com/data/BaseFFE.xls  (REMPLACEZ PAR VOTRE LIEN OVH !) ---
+# --- URL DE LA BASE FFE (REMPLACEZ PAR VOTRE LIEN OVH !) ---
+# FFE_DATA_URL = "VOTRE_URL_STABLE_OVH_ICI"
 FFE_DATA_URL = "http://basilevinet.com/data/BaseFFE.xls" 
 
 # --- CONFIGURATION ---
@@ -54,15 +55,20 @@ def load_permanent_ffe_data(url):
              st.error("Erreur: Impossible de trouver les feuilles nommées 'joueur' et 'club' dans le fichier Excel.")
              return pd.DataFrame()
         
+        # 1. Nettoyage et combinaison des noms de joueurs (Nom Prenom)
         df_joueurs['Nom Joueur'] = df_joueurs['Nom'].str.upper() + ' ' + df_joueurs['Prenom'].str.title()
         
+        # 2. Renommage des colonnes des clubs pour la jointure
         df_clubs = df_clubs.rename(columns={'Ref': 'ClubRef', 'Nom': 'Nom Club'})
         df_clubs = df_clubs[['ClubRef', 'Nom Club']]
         
+        # 3. Jointure des joueurs et des noms de clubs
         df_final = pd.merge(df_joueurs, df_clubs, on='ClubRef', how='left')
         
+        # 4. Conversion du ClubRef en entier
         df_final['ClubRef'] = pd.to_numeric(df_final['ClubRef'], errors='coerce').astype('Int64')
         
+        # 5. Sélection et renommage des colonnes finales
         df_final = df_final[['Nom Joueur', 'Cat', 'Elo', 'ClubRef', 'Nom Club']].copy()
         df_final = df_final.rename(columns={'Nom Joueur': 'Nom'}) 
         
@@ -73,7 +79,7 @@ def load_permanent_ffe_data(url):
         st.error(f"Erreur de chargement de la base FFE. Vérifiez l'URL et le nom des onglets ('joueur', 'club'). Détail: {e}")
         return pd.DataFrame()
 
-# --- FONCTIONS D'ANALYSE (LICHESS et SNOOPCHESS) ---
+# --- FONCTIONS D'ANALYSE (LICHESS) ---
 class PDFReport(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 16)
@@ -147,62 +153,6 @@ def get_player_stats(username, nb_games=50):
         df_b = pd.DataFrame(Counter(b_ops).most_common(5), columns=['Ouverture', 'Fréquence'])
         return df_w, df_b
     except: return None, None
-
-def extract_openings_from_html(container):
-    """
-    Tente d'extraire le Top 5 des ouvertures et leurs fréquences de SnoopChess.
-    (Logique de Scraping)
-    """
-    if not container:
-        return pd.DataFrame({'Ouverture': [], 'Fréquence': []})
-
-    data = []
-    
-    rows = container.find_all('div', class_=lambda c: c and 'flex justify-between' in c) 
-    
-    for row in rows[:5]: 
-        opening_name_element = row.find('span', class_='text-gray-500') 
-        frequency_element = row.find('div', class_='w-1/4') 
-        
-        if opening_name_element and frequency_element:
-            name = opening_name_element.text.strip()
-            freq = frequency_element.text.strip()
-            
-            if name and "Ouverture" not in name and freq and '%' in freq:
-                data.append({
-                    'Ouverture': name,
-                    'Fréquence': freq
-                })
-    
-    return pd.DataFrame(data)
-
-def get_snoopchess_stats(username):
-    """
-    Analyse SnoopChess via Web Scraping (Attention : fonction fragile !)
-    """
-    url = f"https://snoopchess.com/snoop/lichess/{username}"
-    
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers, timeout=15)
-        
-        if response.status_code != 200:
-            st.warning(f"SnoopChess a retourné le statut {response.status_code}. Les données n'ont pas pu être lues.")
-            return None, None
-        
-        soup = BeautifulSoup(response.content, 'html.parser')
-        
-        white_container = soup.find('div', id='white')
-        df_w = extract_openings_from_html(white_container)
-        
-        black_container = soup.find('div', id='black')
-        df_b = extract_openings_from_html(black_container)
-
-        return df_w, df_b
-        
-    except requests.exceptions.RequestException as e:
-        st.warning(f"Impossible de contacter SnoopChess (Timeout/Connexion). Détail: {e}")
-        return None, None
 
 
 # --- MAIN APP ---
@@ -349,40 +299,26 @@ if not df.empty and club_id:
         with t3:
             st.header("⚔️ Préparation de Match")
             
-            # targets liste seulement les joueurs qui ont une liaison Lichess pour l'analyse
-            targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
-            
             player_options = club_players['Nom'].unique() if 'Nom' in club_players.columns else []
             
-            # --- SELECTION DU JOUEUR (utilise la liste complète pour la sélection) ---
+            # --- SELECTION DU JOUEUR (utilise la liste complète) ---
             tgt = st.selectbox("Cible (Joueur du Club)", player_options)
             
             if tgt:
                 
-                # 1. Calcul du nom complet FFE formaté pour l'URL
-                # Exemple: "DUPONT Jean" -> "dupontjean" ou "dupont-jean"
-                # Nous utilisons la version simple, sans espaces:
-                name_for_url = tgt.lower().replace(' ', '')
-                
-                # 2. Récupération du pseudo Lichess (si lié)
+                # Récupération du pseudo Lichess (si lié pour l'analyse)
                 pseudo_lichess = st.session_state['mappings'].get(tgt)
                 
                 st.markdown("---")
-                st.subheader("🔗 Liens d'Analyse Externe")
                 
-                # --- AFFICHAGE LIEN PAR NOM FFE ---
-                st.markdown(f"**Lien par Nom FFE :** [Recherche SnoopChess pour **{tgt}**](https://snoopchess.com/snoop/lichess/{name_for_url})")
-                st.caption("⚠️ Ceci ne fonctionne que si le pseudo Lichess correspond exactement au Nom/Prénom (sans espaces).")
-
                 if pseudo_lichess:
-                    # --- AFFICHAGE LIEN PAR PSEUDO LICHESS (RECOMMANDÉ) ---
-                    st.markdown(f"**Lien par Pseudo Lichess :** [Recherche SnoopChess pour **{pseudo_lichess}**](https://snoopchess.com/snoop/lichess/{pseudo_lichess})")
-                    st.markdown("---")
-
                     # --- ANCIENNE LOGIQUE D'ANALYSE LICHESS API (Stable) ---
-                    if st.button(f"Analyser le Répertoire Lichess de {pseudo_lichess}"):
+                    st.markdown(f"**Analyse Interne (API Lichess)**")
+                    st.caption(f"Basée sur le pseudo lié : **{pseudo_lichess}**")
+
+                    if st.button(f"Analyser le Répertoire Lichess (Top 50 Parties)"):
                         st.subheader("Analyse Lichess (Top 50 Parties)")
-                        df_w, df_b = get_player_stats(pseudo_lichess) 
+                        df_w, df_b = get_player_stats(pseudo_lichess) # Utilise l'API Lichess
                         
                         if df_w is not None and not df_w.empty:
                             c1, c2 = st.columns(2)
@@ -394,11 +330,12 @@ if not df.empty and club_id:
                             pdf = create_pdf_download(tgt, pseudo_lichess, df_w, df_b)
                             st.download_button("📄 Télécharger PDF de Prépa", pdf, "prepa_match.pdf", "application/pdf")
                         else:
-                            st.error("Impossible de récupérer ou de traiter les données Lichess (profil trop récent ou privé).")
+                            st.error(f"Impossible de récupérer ou de traiter les données Lichess pour {pseudo_lichess} (profil trop récent ou privé).")
                 else:
-                    st.warning("Ce joueur n'a pas de pseudo Lichess lié. L'analyse interne et le lien recommandé ne sont pas disponibles.")
-                    
-# La condition finale est simplifiée et sécurisée (plus de risque de SyntaxError)
-if FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
-     st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+                    st.warning("Pour effectuer l'analyse interne, veuillez lier ce joueur à un pseudo Lichess dans l'onglet '🔗 Liaison Lichess'.")
 
+                st.markdown("---")
+                st.subheader("🔍 Pour aller plus loin (Recherche Manuelle)")
+                st.markdown("Rechercher manuellement le joueur sur les outils externes :")
+                st.markdown(f"1. [**SnoopChess**](https://snoopchess.com/)")
+                st.markdown(f"2. [**Chess-Results**](https://chess-results.com/)")
