@@ -348,47 +348,57 @@ if not df.empty and club_id:
             
         with t3:
             st.header("⚔️ Préparation de Match")
+            
+            # targets liste seulement les joueurs qui ont une liaison Lichess pour l'analyse
             targets = [p for p in club_players['Nom'] if p in st.session_state['mappings']]
             
-            if targets:
-                tgt = st.selectbox("Cible (Joueur de votre club)", targets)
-                pseudo = st.session_state['mappings'][tgt]
+            player_options = club_players['Nom'].unique() if 'Nom' in club_players.columns else []
+            
+            # --- SELECTION DU JOUEUR (utilise la liste complète pour la sélection) ---
+            tgt = st.selectbox("Cible (Joueur du Club)", player_options)
+            
+            if tgt:
                 
-                # Lien direct vers SnoopChess
-                st.markdown(f"**Analyse Externe :** [Consulter la page de **{pseudo}** sur SnoopChess](https://snoopchess.com/snoop/lichess/{pseudo})")
+                # 1. Calcul du nom complet FFE formaté pour l'URL
+                # Exemple: "DUPONT Jean" -> "dupontjean" ou "dupont-jean"
+                # Nous utilisons la version simple, sans espaces:
+                name_for_url = tgt.lower().replace(' ', '')
+                
+                # 2. Récupération du pseudo Lichess (si lié)
+                pseudo_lichess = st.session_state['mappings'].get(tgt)
+                
                 st.markdown("---")
+                st.subheader("🔗 Liens d'Analyse Externe")
                 
-                analysis_type = st.radio("Source de l'Analyse", ["Lichess (API Officielle)", "SnoopChess (Web Scraping)"], horizontal=True)
-                
-                if st.button("Analyser le Répertoire"):
-                    
-                    if analysis_type == "Lichess (API Officielle)":
-                        st.subheader("Analyse Lichess (Jeu Récent)")
-                        df_w, df_b = get_player_stats(pseudo)
-                        
-                    elif analysis_type == "SnoopChess (Web Scraping)":
-                        st.subheader("Analyse SnoopChess (Répertoire Ciblé)")
-                        st.warning("⚠️ L'analyse SnoopChess est basée sur du Web Scraping et peut être lente ou échouer si le site change.")
-                        df_w, df_b = get_snoopchess_stats(pseudo)
-                        
-                    
-                    if df_w is not None and not df_w.empty:
-                        c1, c2 = st.columns(2)
-                        with c1: 
-                            st.write("Blancs"); st.dataframe(df_w, hide_index=True)
-                        with c2: 
-                            st.write("Noirs"); st.dataframe(df_b, hide_index=True)
-                        
-                        pdf = create_pdf_download(tgt, pseudo, df_w, df_b)
-                        st.download_button("📄 Télécharger PDF de Prépa", pdf, "prepa_match.pdf", "application/pdf")
-                    else:
-                        st.error("Impossible de récupérer ou de traiter les données pour l'analyse sélectionnée.")
-                        
-            else:
-                st.warning("Liez d'abord un pseudo Lichess dans l'onglet 2 pour ce joueur avant de lancer l'analyse.")
-    else:
-        st.error(f"Aucun joueur trouvé pour le club sélectionné.")
+                # --- AFFICHAGE LIEN PAR NOM FFE ---
+                st.markdown(f"**Lien par Nom FFE :** [Recherche SnoopChess pour **{tgt}**](https://snoopchess.com/snoop/lichess/{name_for_url})")
+                st.caption("⚠️ Ceci ne fonctionne que si le pseudo Lichess correspond exactement au Nom/Prénom (sans espaces).")
 
+                if pseudo_lichess:
+                    # --- AFFICHAGE LIEN PAR PSEUDO LICHESS (RECOMMANDÉ) ---
+                    st.markdown(f"**Lien par Pseudo Lichess :** [Recherche SnoopChess pour **{pseudo_lichess}**](https://snoopchess.com/snoop/lichess/{pseudo_lichess})")
+                    st.markdown("---")
+
+                    # --- ANCIENNE LOGIQUE D'ANALYSE LICHESS API (Stable) ---
+                    if st.button(f"Analyser le Répertoire Lichess de {pseudo_lichess}"):
+                        st.subheader("Analyse Lichess (Top 50 Parties)")
+                        df_w, df_b = get_player_stats(pseudo_lichess) 
+                        
+                        if df_w is not None and not df_w.empty:
+                            c1, c2 = st.columns(2)
+                            with c1: 
+                                st.write("Blancs"); st.dataframe(df_w, hide_index=True)
+                            with c2: 
+                                st.write("Noirs"); st.dataframe(df_b, hide_index=True)
+                            
+                            pdf = create_pdf_download(tgt, pseudo_lichess, df_w, df_b)
+                            st.download_button("📄 Télécharger PDF de Prépa", pdf, "prepa_match.pdf", "application/pdf")
+                        else:
+                            st.error("Impossible de récupérer ou de traiter les données Lichess (profil trop récent ou privé).")
+                else:
+                    st.warning("Ce joueur n'a pas de pseudo Lichess lié. L'analyse interne et le lien recommandé ne sont pas disponibles.")
+                    
 # La condition finale est simplifiée et sécurisée (plus de risque de SyntaxError)
 if FFE_DATA_URL == "VOTRE_URL_STABLE_OVH_ICI":
      st.warning("⚠️ Veuillez remplacer VOTRE_URL_STABLE_OVH_ICI par l'URL de votre fichier FFE hébergé.")
+
